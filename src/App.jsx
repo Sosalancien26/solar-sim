@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Sun, Plus, Trash2, Save, FileText, Search, ChevronRight, ChevronLeft, Home, Zap, Settings, CheckCircle, X, Edit, Calculator, TrendingUp, Euro, Loader2, MapPin, Refrigerator, Tv, Lightbulb, Wind, Flame, Droplet, Car, Waves, Microwave, WashingMachine, Laptop, Wifi, Coffee, Gamepad2, Sparkles, Target, Gauge, Battery, Compass, BarChart3, Leaf, Phone, Mail, User, Award } from 'lucide-react';
+import { Sun, Plus, Trash2, Save, FileText, Search, ChevronRight, ChevronLeft, Home, Zap, Settings, CheckCircle, X, Edit, Calculator, TrendingUp, Loader2, MapPin, Sparkles, Target, Gauge, Compass, BarChart3, Leaf, Phone, Mail, User, Award, Flame, Activity } from 'lucide-react';
 
 const SUPABASE_URL = 'https://yxfanlgklvpdpsrzcoqy.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_SA4vTbf1FfOH2YNHtw3LJg_geqlOxpV';
@@ -40,6 +40,9 @@ const ORIENTATION_COEF = {
   'Sud': 1.0, 'Sud-Est': 0.95, 'Sud-Ouest': 0.95,
   'Est': 0.85, 'Ouest': 0.85, 'Nord': 0.6,
 };
+
+// Paliers commerciaux standards (biais sur 3.5/4/4.5)
+const KWC_TIERS = [3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0];
 
 const APPLIANCE_CATEGORIES = [
   {
@@ -203,7 +206,6 @@ export default function SolarSimulator() {
         final_panels: currentSim.final_panels ?? calcs.recommendedPanels,
         estimated_annual_production_kwh: calcs.production,
         self_consumption_rate: calcs.selfConsumptionRate,
-        estimated_savings_eur: calcs.savings,
         notes: currentSim.notes || null,
         status: currentSim.status,
       };
@@ -219,10 +221,7 @@ export default function SolarSimulator() {
         },
         body: JSON.stringify(payload),
       });
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(txt);
-      }
+      if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       const saved = Array.isArray(data) ? data[0] : data;
       setCurrentSim({ ...saved, appliances: saved.appliances || [] });
@@ -274,68 +273,68 @@ export default function SolarSimulator() {
 
   if (view === 'list') {
     return (
-      <div className="min-h-screen bg-slate-50">
+      <div className="min-h-screen bg-slate-100">
         <Toast toast={toast} />
         <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
-          <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-slate-900 flex items-center justify-center">
-                <Sun className="w-5 h-5 text-amber-400" />
+              <div className="w-10 h-10 rounded-lg bg-slate-900 flex items-center justify-center">
+                <Sun className="w-5 h-5 text-amber-400" strokeWidth={2.5} />
               </div>
               <div>
-                <h1 className="text-base sm:text-lg font-bold text-slate-900 leading-tight">Solar Sim</h1>
-                <p className="text-[11px] sm:text-xs text-slate-500 leading-tight">Dimensionnement photovoltaïque</p>
+                <h1 className="text-base sm:text-lg font-bold text-slate-900 leading-none tracking-tight">SOLAR SIM</h1>
+                <p className="text-[11px] text-slate-500 leading-none mt-1 font-medium uppercase tracking-wider">Études photovoltaïques</p>
               </div>
             </div>
             <button
               onClick={newSimulation}
-              className="bg-slate-900 hover:bg-slate-800 text-white px-3 sm:px-4 py-2 rounded-lg font-semibold flex items-center gap-2 transition-all text-sm"
+              className="bg-slate-900 hover:bg-slate-800 text-white px-3 sm:px-4 py-2 rounded-md font-semibold flex items-center gap-2 transition-all text-sm shadow-sm"
             >
               <Plus className="w-4 h-4" />
-              <span className="hidden sm:inline">Nouvelle simulation</span>
+              <span className="hidden sm:inline">Nouvelle étude</span>
               <span className="sm:hidden">Nouveau</span>
             </button>
           </div>
         </header>
 
-        <main className="max-w-6xl mx-auto px-4 py-6">
+        <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
           {simulations.length > 0 && (
             <div className="grid grid-cols-3 gap-3 mb-6">
-              <StatBubble label="Total" value={simulations.length} icon={FileText} />
-              <StatBubble label="Validés" value={simulations.filter(s => s.status === 'validé' || s.status === 'signé').length} icon={CheckCircle} accent />
+              <StatBubble label="Études" value={simulations.length} icon={FileText} />
+              <StatBubble label="Validées" value={simulations.filter(s => s.status === 'validé' || s.status === 'signé').length} icon={CheckCircle} accent />
               <StatBubble label="Total kWc" value={simulations.reduce((s, x) => s + (Number(x.final_kwc) || 0), 0).toFixed(1)} icon={Zap} />
             </div>
           )}
 
           <div className="mb-5 relative">
-            <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+            <Search className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
               placeholder="Rechercher un client, ville, code postal..."
-              className="w-full pl-12 pr-4 py-3 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none"
+              className="w-full pl-11 pr-4 py-2.5 bg-white border border-slate-200 rounded-md focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none text-sm"
             />
           </div>
 
           {loading ? (
             <div className="flex items-center justify-center py-20">
-              <Loader2 className="w-8 h-8 animate-spin text-slate-700" />
+              <Loader2 className="w-7 h-7 animate-spin text-slate-700" />
             </div>
           ) : filteredSims.length === 0 ? (
-            <div className="bg-white rounded-2xl p-12 text-center border border-slate-200">
-              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-slate-100 flex items-center justify-center">
-                <Sun className="w-8 h-8 text-slate-400" />
+            <div className="bg-white rounded-lg p-12 text-center border border-slate-200">
+              <div className="w-14 h-14 mx-auto mb-4 rounded-lg bg-slate-100 flex items-center justify-center">
+                <Sun className="w-7 h-7 text-slate-400" />
               </div>
-              <h3 className="text-lg font-bold text-slate-800 mb-2">
-                {searchQuery ? 'Aucun résultat' : 'Aucune simulation'}
+              <h3 className="text-base font-bold text-slate-900 mb-1">
+                {searchQuery ? 'Aucun résultat' : 'Aucune étude'}
               </h3>
               <p className="text-slate-500 mb-6 text-sm">
-                {searchQuery ? 'Essaie une autre recherche' : 'Crée ta première simulation pour démarrer'}
+                {searchQuery ? 'Essayez une autre recherche' : 'Démarrez votre première étude photovoltaïque'}
               </p>
               {!searchQuery && (
                 <button onClick={newSimulation}
-                  className="bg-slate-900 hover:bg-slate-800 text-white px-5 py-2.5 rounded-lg font-semibold inline-flex items-center gap-2 transition-all text-sm">
+                  className="bg-slate-900 hover:bg-slate-800 text-white px-5 py-2.5 rounded-md font-semibold inline-flex items-center gap-2 transition-all text-sm shadow-sm">
                   <Plus className="w-4 h-4" />
-                  Créer une simulation
+                  Nouvelle étude
                 </button>
               )}
             </div>
@@ -347,36 +346,40 @@ export default function SolarSimulator() {
             </div>
           )}
         </main>
+
+        <footer className="max-w-6xl mx-auto px-4 sm:px-6 py-6 text-center text-xs text-slate-400">
+          Solar Sim · Outil professionnel d'étude photovoltaïque
+        </footer>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 pb-32">
+    <div className="min-h-screen bg-slate-100 pb-32">
       <Toast toast={toast} />
       <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
-        <div className="max-w-5xl mx-auto px-4 py-3">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-3">
           <div className="flex items-center justify-between mb-3">
             <button onClick={() => setView('list')}
-              className="flex items-center gap-1.5 text-slate-600 hover:text-slate-900 font-medium text-sm">
-              <ChevronLeft className="w-5 h-5" />
+              className="flex items-center gap-1.5 text-slate-600 hover:text-slate-900 font-semibold text-sm transition-colors">
+              <ChevronLeft className="w-4 h-4" />
               <span className="hidden sm:inline">Retour</span>
             </button>
             <div className="flex-1 text-center px-2 min-w-0">
-              <div className="text-[11px] text-slate-500 uppercase tracking-wide font-semibold">Étape {step}/{STEPS.length}</div>
-              <div className="text-sm font-bold text-slate-900 truncate">
-                {currentSim.client_name || 'Nouvelle simulation'}
+              <div className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Étape {step}/{STEPS.length}</div>
+              <div className="text-sm font-bold text-slate-900 truncate mt-0.5">
+                {currentSim.client_name || 'Nouvelle étude'}
               </div>
             </div>
             <button onClick={saveSimulation} disabled={saving}
-              className="bg-slate-900 hover:bg-slate-800 text-white px-3 py-2 rounded-lg font-semibold flex items-center gap-1.5 transition-all disabled:opacity-60 text-sm">
+              className="bg-slate-900 hover:bg-slate-800 text-white px-3 py-2 rounded-md font-semibold flex items-center gap-1.5 transition-all disabled:opacity-60 text-sm shadow-sm">
               {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
               <span className="hidden sm:inline">Enregistrer</span>
             </button>
           </div>
 
-          <div className="relative">
-            <div className="absolute top-4 left-0 right-0 h-0.5 bg-slate-200">
+          <div className="relative pt-2">
+            <div className="absolute top-[18px] left-4 right-4 h-0.5 bg-slate-200">
               <div className="h-full bg-slate-900 transition-all duration-500"
                 style={{ width: `${((step - 1) / (STEPS.length - 1)) * 100}%` }} />
             </div>
@@ -387,17 +390,17 @@ export default function SolarSimulator() {
                 const isDone = step > s.id;
                 return (
                   <button key={s.id} onClick={() => setStep(s.id)}
-                    className="flex flex-col items-center gap-1 group">
-                    <div className={`w-9 h-9 rounded-full flex items-center justify-center transition-all ${
+                    className="flex flex-col items-center gap-1.5 group">
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${
                       isActive
-                        ? 'bg-slate-900 text-amber-400 ring-4 ring-slate-100'
+                        ? 'bg-slate-900 text-amber-400 ring-4 ring-amber-100'
                         : isDone
                         ? 'bg-slate-900 text-white'
                         : 'bg-white border-2 border-slate-200 text-slate-400'
                     }`}>
-                      {isDone ? <CheckCircle className="w-4 h-4" /> : <Icon className="w-4 h-4" />}
+                      {isDone ? <CheckCircle className="w-4 h-4" /> : <Icon className="w-3.5 h-3.5" />}
                     </div>
-                    <div className={`text-[10px] sm:text-xs font-semibold transition-colors ${
+                    <div className={`text-[10px] sm:text-[11px] font-bold uppercase tracking-wide transition-colors ${
                       isActive ? 'text-slate-900' : isDone ? 'text-slate-700' : 'text-slate-400'
                     }`}>{s.label}</div>
                   </button>
@@ -408,7 +411,7 @@ export default function SolarSimulator() {
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-4 py-6">
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
         {step === 1 && <StepClient sim={currentSim} update={updateSim} showToast={showToast} />}
         {step === 2 && <StepHousing sim={currentSim} update={updateSim} />}
         {step === 3 && <StepAppliances sim={currentSim} update={updateSim} />}
@@ -418,21 +421,21 @@ export default function SolarSimulator() {
 
         <div className="flex items-center justify-between mt-8 gap-3">
           <button onClick={() => setStep(Math.max(1, step - 1))} disabled={step === 1}
-            className="px-4 py-2.5 bg-white border border-slate-200 rounded-lg font-semibold text-slate-700 disabled:opacity-40 hover:bg-slate-50 transition-all flex items-center gap-1.5 text-sm">
+            className="px-4 py-2.5 bg-white border border-slate-200 rounded-md font-semibold text-slate-700 disabled:opacity-40 hover:bg-slate-50 transition-all flex items-center gap-1.5 text-sm">
             <ChevronLeft className="w-4 h-4" />
             <span className="hidden sm:inline">Précédent</span>
           </button>
           {step < STEPS.length ? (
             <button onClick={() => setStep(Math.min(STEPS.length, step + 1))}
-              className="flex-1 sm:flex-initial px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg font-semibold transition-all flex items-center justify-center gap-1.5 text-sm">
-              Suivant
+              className="flex-1 sm:flex-initial px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-md font-semibold transition-all flex items-center justify-center gap-1.5 text-sm shadow-sm">
+              Continuer
               <ChevronRight className="w-4 h-4" />
             </button>
           ) : (
             <button onClick={saveSimulation} disabled={saving}
-              className="flex-1 sm:flex-initial px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg font-semibold transition-all flex items-center justify-center gap-1.5 disabled:opacity-60 text-sm">
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              Finaliser
+              className="flex-1 sm:flex-initial px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-md font-semibold transition-all flex items-center justify-center gap-1.5 disabled:opacity-60 text-sm shadow-sm">
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+              Finaliser l'étude
             </button>
           )}
         </div>
@@ -447,6 +450,19 @@ function numOrNull(v) {
 }
 function intOrNull(v) {
   const n = numOrNull(v); return n === null ? null : Math.round(n);
+}
+
+// Choisit le palier kWc commercial le plus pertinent
+function selectCommercialKwc(rawKwc) {
+  // Borné entre 3.5 et 9
+  if (rawKwc <= 3.5) return 3.5;
+  if (rawKwc >= 9) return 9.0;
+
+  // On cherche le palier supérieur ou égal (fourchette haute)
+  for (const tier of KWC_TIERS) {
+    if (rawKwc <= tier) return tier;
+  }
+  return 9.0;
 }
 
 function computeAll(sim) {
@@ -464,10 +480,24 @@ function computeAll(sim) {
   const inclCoef = incl >= 20 && incl <= 45 ? 1 : 0.95;
   const productionPerKwc = sunshine * orientCoef * inclCoef;
 
-  const targetCoverage = 0.7;
-  const recommendedKwc = refConsumption > 0
-    ? Math.round((refConsumption * targetCoverage / productionPerKwc) * 10) / 10
-    : 3;
+  // Calcul brut : on vise une couverture qui donne souvent 3.5/4/4.5 kWc
+  // Pour une conso modérée (≤ 5500 kWh) → on tape 3.5-4.5 kWc
+  // Pour une conso plus élevée → on monte progressivement jusqu'à 9 max
+  let rawKwc;
+  if (refConsumption <= 0) {
+    rawKwc = 3.5;
+  } else if (refConsumption <= 4000) {
+    rawKwc = 3.5;
+  } else if (refConsumption <= 5000) {
+    rawKwc = 4.0;
+  } else if (refConsumption <= 6000) {
+    rawKwc = 4.5;
+  } else {
+    // Au-delà : ratio classique mais borné
+    rawKwc = (refConsumption * 0.85 / productionPerKwc);
+  }
+
+  const recommendedKwc = selectCommercialKwc(rawKwc);
 
   const panelPower = Number(sim.panel_power_w) || 425;
   const recommendedPanels = Math.ceil((recommendedKwc * 1000) / panelPower);
@@ -479,30 +509,27 @@ function computeAll(sim) {
 
   const ratio = refConsumption > 0 ? production / refConsumption : 0;
   let selfConsumptionRate;
-  if (ratio < 0.5) selfConsumptionRate = 85;
-  else if (ratio < 0.8) selfConsumptionRate = 70;
-  else if (ratio < 1.2) selfConsumptionRate = 55;
-  else selfConsumptionRate = 40;
-
-  const selfConsumed = production * (selfConsumptionRate / 100);
-  const surplus = production - selfConsumed;
-  const savings = Math.round(selfConsumed * 0.25 + surplus * 0.13);
+  if (ratio < 0.5) selfConsumptionRate = 90;
+  else if (ratio < 0.8) selfConsumptionRate = 80;
+  else if (ratio < 1.2) selfConsumptionRate = 70;
+  else selfConsumptionRate = 60;
 
   const co2Saved = Math.round(production * 0.06);
 
   return {
     estimatedConsumption: Math.round(estimatedConsumption),
     recommendedKwc, recommendedPanels,
-    production, selfConsumptionRate, savings,
+    production, selfConsumptionRate,
     productionPerKwc: Math.round(productionPerKwc),
     co2Saved, finalKwc, finalPanels,
+    refConsumption,
   };
 }
 
 function Toast({ toast }) {
   if (!toast) return null;
   return (
-    <div className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-xl text-white font-semibold flex items-center gap-2 text-sm ${
+    <div className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-md shadow-xl text-white font-semibold flex items-center gap-2 text-sm ${
       toast.type === 'error' ? 'bg-red-600' : 'bg-slate-900'
     }`}>
       {toast.type === 'error' ? <X className="w-4 h-4" /> : <CheckCircle className="w-4 h-4 text-amber-400" />}
@@ -513,12 +540,12 @@ function Toast({ toast }) {
 
 function StatBubble({ label, value, icon: Icon, accent }) {
   return (
-    <div className="bg-white rounded-xl p-3 sm:p-4 border border-slate-200">
-      <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-2 ${accent ? 'bg-slate-900 text-amber-400' : 'bg-slate-100 text-slate-700'}`}>
+    <div className="bg-white rounded-lg p-3 sm:p-4 border border-slate-200">
+      <div className={`w-8 h-8 rounded-md flex items-center justify-center mb-2 ${accent ? 'bg-slate-900 text-amber-400' : 'bg-slate-100 text-slate-700'}`}>
         <Icon className="w-4 h-4" />
       </div>
-      <div className="text-[10px] sm:text-xs text-slate-500 font-semibold uppercase tracking-wide">{label}</div>
-      <div className="text-lg sm:text-xl font-bold text-slate-900">{value}</div>
+      <div className="text-[10px] sm:text-[11px] text-slate-500 font-bold uppercase tracking-widest">{label}</div>
+      <div className="text-lg sm:text-xl font-bold text-slate-900 mt-0.5">{value}</div>
     </div>
   );
 }
@@ -533,53 +560,53 @@ function SimCard({ sim, onOpen, onDelete }) {
   const cfg = statusConfig[sim.status] || statusConfig.brouillon;
 
   return (
-    <div className="bg-white rounded-xl p-5 border border-slate-200 hover:border-slate-300 hover:shadow-md transition-all group">
+    <div className="bg-white rounded-lg p-5 border border-slate-200 hover:border-slate-400 hover:shadow-md transition-all group">
       <div className="flex items-start justify-between mb-3">
         <div className="flex-1 min-w-0">
           <h3 className="font-bold text-slate-900 truncate">{sim.client_name || 'Sans nom'}</h3>
-          <p className="text-sm text-slate-500 truncate flex items-center gap-1 mt-0.5">
+          <p className="text-xs text-slate-500 truncate flex items-center gap-1 mt-1">
             <MapPin className="w-3 h-3 flex-shrink-0" />
             {sim.client_city || sim.client_postal_code || sim.region || '—'}
           </p>
         </div>
-        <span className={`px-2 py-1 rounded-md text-xs font-semibold ${cfg.bg} ${cfg.text} flex items-center gap-1.5 flex-shrink-0`}>
+        <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${cfg.bg} ${cfg.text} flex items-center gap-1.5 flex-shrink-0`}>
           <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />
           {sim.status || 'brouillon'}
         </span>
       </div>
 
       <div className="grid grid-cols-2 gap-2 mb-4">
-        <div className="bg-slate-50 rounded-lg p-3 border border-slate-100">
-          <div className="flex items-center gap-1 text-[10px] text-slate-500 font-bold uppercase tracking-wide mb-1">
+        <div className="bg-slate-50 rounded-md p-3 border border-slate-100">
+          <div className="flex items-center gap-1 text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1">
             <Zap className="w-3 h-3" /> Puissance
           </div>
           <div className="text-xl font-bold text-slate-900">
             {sim.final_kwc ? `${sim.final_kwc}` : '—'}
-            <span className="text-xs ml-0.5 text-slate-500">kWc</span>
+            <span className="text-xs ml-0.5 text-slate-500 font-medium">kWc</span>
           </div>
         </div>
-        <div className="bg-slate-50 rounded-lg p-3 border border-slate-100">
-          <div className="flex items-center gap-1 text-[10px] text-slate-500 font-bold uppercase tracking-wide mb-1">
+        <div className="bg-slate-50 rounded-md p-3 border border-slate-100">
+          <div className="flex items-center gap-1 text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1">
             <BarChart3 className="w-3 h-3" /> Panneaux
           </div>
           <div className="text-xl font-bold text-slate-900">{sim.final_panels || '—'}</div>
         </div>
       </div>
 
-      {sim.estimated_savings_eur > 0 && (
-        <div className="mb-3 px-3 py-2 bg-amber-50 rounded-lg border border-amber-100 flex items-center justify-between">
-          <span className="text-xs font-medium text-amber-800">Économies/an</span>
-          <span className="text-sm font-bold text-amber-900">~{Math.round(sim.estimated_savings_eur).toLocaleString('fr-FR')} €</span>
+      {sim.self_consumption_rate > 0 && (
+        <div className="mb-3 px-3 py-2 bg-amber-50 rounded-md border border-amber-100 flex items-center justify-between">
+          <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Autoconsommation</span>
+          <span className="text-sm font-bold text-amber-900">{sim.self_consumption_rate}%</span>
         </div>
       )}
 
       <div className="flex items-center gap-2">
         <button onClick={onOpen}
-          className="flex-1 bg-slate-900 hover:bg-slate-800 text-white py-2 rounded-lg font-semibold text-sm flex items-center justify-center gap-1.5 transition-colors">
+          className="flex-1 bg-slate-900 hover:bg-slate-800 text-white py-2 rounded-md font-semibold text-sm flex items-center justify-center gap-1.5 transition-colors">
           <Edit className="w-4 h-4" /> Ouvrir
         </button>
         <button onClick={onDelete}
-          className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors">
+          className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors">
           <Trash2 className="w-4 h-4" />
         </button>
       </div>
@@ -589,21 +616,22 @@ function SimCard({ sim, onOpen, onDelete }) {
 
 function Card({ children, className = '' }) {
   return (
-    <div className={`bg-white rounded-2xl p-5 sm:p-6 border border-slate-200 ${className}`}>
+    <div className={`bg-white rounded-lg p-5 sm:p-6 border border-slate-200 ${className}`}>
       {children}
     </div>
   );
 }
 
-function CardHeader({ icon: Icon, title, subtitle }) {
+function CardHeader({ icon: Icon, title, subtitle, num }) {
   return (
-    <div className="flex items-start gap-3 mb-5">
-      <div className="w-10 h-10 rounded-xl bg-slate-900 flex items-center justify-center flex-shrink-0">
-        <Icon className="w-5 h-5 text-amber-400" />
+    <div className="flex items-start gap-3 mb-5 pb-4 border-b border-slate-100">
+      <div className="w-9 h-9 rounded-md bg-slate-900 flex items-center justify-center flex-shrink-0">
+        <Icon className="w-4 h-4 text-amber-400" />
       </div>
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
+        {num && <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Section {num}</div>}
         <h2 className="text-base sm:text-lg font-bold text-slate-900 leading-tight">{title}</h2>
-        {subtitle && <p className="text-sm text-slate-500 leading-tight mt-0.5">{subtitle}</p>}
+        {subtitle && <p className="text-xs text-slate-500 leading-tight mt-0.5">{subtitle}</p>}
       </div>
     </div>
   );
@@ -612,9 +640,9 @@ function CardHeader({ icon: Icon, title, subtitle }) {
 function Field({ label, children, className = '', hint }) {
   return (
     <div className={className}>
-      <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wide">{label}</label>
+      <label className="block text-[11px] font-bold text-slate-700 mb-1.5 uppercase tracking-widest">{label}</label>
       {children}
-      {hint && <p className="text-xs text-slate-400 mt-1">{hint}</p>}
+      {hint && <p className="text-xs text-slate-400 mt-1.5">{hint}</p>}
     </div>
   );
 }
@@ -623,7 +651,7 @@ function Input(props) {
   const { className, ...rest } = props;
   return (
     <input {...rest}
-      className={`w-full px-4 py-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all text-slate-900 placeholder:text-slate-400 ${className || ''}`}
+      className={`w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-md focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all text-slate-900 placeholder:text-slate-400 text-sm ${className || ''}`}
     />
   );
 }
@@ -631,7 +659,7 @@ function Input(props) {
 function Select({ children, className, ...rest }) {
   return (
     <select {...rest}
-      className={`w-full px-4 py-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all appearance-none text-slate-900 ${className || ''}`}
+      className={`w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-md focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all appearance-none text-slate-900 text-sm ${className || ''}`}
       style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%2712%27 viewBox=%270 0 12 12%27%3E%3Cpath fill=%27%2364748b%27 d=%27M3 4l3 3 3-3z%27/%3E%3C/svg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px' }}
     >
       {children}
@@ -668,7 +696,7 @@ function StepClient({ sim, update, showToast }) {
     const p = feature.properties;
     const postal = p.postcode || '';
     let dept = postal.substring(0, 2);
-    if (postal.startsWith('20')) {
+    if (postal.startsWith('20') && postal.length >= 5) {
       const num = parseInt(postal, 10);
       dept = num >= 20200 ? '2B' : '2A';
     }
@@ -687,32 +715,32 @@ function StepClient({ sim, update, showToast }) {
   return (
     <div className="space-y-4">
       <Card>
-        <CardHeader icon={User} title="Identité du client" subtitle="Nom et coordonnées" />
+        <CardHeader icon={User} title="Informations client" subtitle="Coordonnées du prospect" num="01" />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Field label="Nom complet *" className="sm:col-span-2">
             <Input value={sim.client_name} onChange={e => update({ client_name: e.target.value })} placeholder="Jean Dupont" />
           </Field>
           <Field label="Téléphone">
             <div className="relative">
-              <Phone className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-              <Input value={sim.client_phone} onChange={e => update({ client_phone: e.target.value })} placeholder="06 12 34 56 78" className="pl-10" />
+              <Phone className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <Input value={sim.client_phone} onChange={e => update({ client_phone: e.target.value })} placeholder="06 12 34 56 78" className="pl-9" />
             </div>
           </Field>
           <Field label="Email">
             <div className="relative">
-              <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-              <Input value={sim.client_email} onChange={e => update({ client_email: e.target.value })} placeholder="email@exemple.fr" type="email" className="pl-10" />
+              <Mail className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <Input value={sim.client_email} onChange={e => update({ client_email: e.target.value })} placeholder="email@exemple.fr" type="email" className="pl-9" />
             </div>
           </Field>
         </div>
       </Card>
 
       <Card>
-        <CardHeader icon={MapPin} title="Adresse du chantier" subtitle="Saisie automatique via la Base Adresse Nationale" />
+        <CardHeader icon={MapPin} title="Adresse du chantier" subtitle="Saisie automatique via la Base Adresse Nationale" num="02" />
         <div className="space-y-3">
           <Field label="Recherche d'adresse">
             <div className="relative">
-              <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 z-10" />
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 z-10" />
               <input
                 type="text"
                 value={sim.client_address || ''}
@@ -722,13 +750,13 @@ function StepClient({ sim, update, showToast }) {
                 }}
                 onFocus={() => sim.client_address && searchAddress(sim.client_address)}
                 onBlur={() => setTimeout(() => setShowSuggest(false), 200)}
-                placeholder="12 rue de la Paix, Paris..."
-                className="w-full pl-10 pr-10 py-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all"
+                placeholder="Tapez l'adresse complète..."
+                className="w-full pl-9 pr-9 py-2.5 bg-white border border-slate-200 rounded-md focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all text-sm"
               />
-              {searching && <Loader2 className="w-4 h-4 absolute right-3.5 top-1/2 -translate-y-1/2 animate-spin text-slate-500" />}
+              {searching && <Loader2 className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-slate-500" />}
 
               {showSuggest && suggestions.length > 0 && (
-                <div className="absolute z-30 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden">
+                <div className="absolute z-30 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-xl overflow-hidden">
                   {suggestions.map((s, i) => (
                     <button
                       key={i}
@@ -737,7 +765,7 @@ function StepClient({ sim, update, showToast }) {
                     >
                       <MapPin className="w-4 h-4 text-slate-400 mt-0.5 flex-shrink-0" />
                       <div className="flex-1 min-w-0">
-                        <div className="font-medium text-sm text-slate-900 truncate">{s.properties.name}</div>
+                        <div className="font-semibold text-sm text-slate-900 truncate">{s.properties.name}</div>
                         <div className="text-xs text-slate-500 truncate">
                           {s.properties.postcode} {s.properties.city}
                           {s.properties.context && <span className="text-slate-400"> · {s.properties.context}</span>}
@@ -772,13 +800,13 @@ function StepClient({ sim, update, showToast }) {
           </div>
 
           {sim.region && (
-            <div className="flex items-center gap-2 px-4 py-3 bg-slate-50 rounded-lg border border-slate-200">
-              <Sun className="w-5 h-5 text-amber-500 flex-shrink-0" />
-              <div className="flex-1 text-sm min-w-0">
-                <span className="text-slate-600">Région solaire :</span>
+            <div className="flex items-center gap-2 px-3.5 py-2.5 bg-slate-50 rounded-md border border-slate-200">
+              <Sun className="w-4 h-4 text-amber-500 flex-shrink-0" />
+              <div className="flex-1 text-xs min-w-0">
+                <span className="text-slate-500 font-semibold uppercase tracking-wider text-[10px]">Région solaire</span>
                 <span className="font-bold text-slate-900 ml-1.5">{sim.region}</span>
               </div>
-              <span className="text-sm font-bold text-slate-900 whitespace-nowrap">{REGIONS[sim.region]} kWh/kWc</span>
+              <span className="text-xs font-bold text-slate-900 whitespace-nowrap">{REGIONS[sim.region]} kWh/kWc</span>
             </div>
           )}
         </div>
@@ -789,29 +817,29 @@ function StepClient({ sim, update, showToast }) {
 
 function StepHousing({ sim, update }) {
   const orientations = [
-    { val: 'Sud', emoji: '⬇️', score: 100 },
-    { val: 'Sud-Est', emoji: '↙️', score: 95 },
-    { val: 'Sud-Ouest', emoji: '↘️', score: 95 },
-    { val: 'Est', emoji: '⬅️', score: 85 },
-    { val: 'Ouest', emoji: '➡️', score: 85 },
-    { val: 'Nord', emoji: '⬆️', score: 60 },
+    { val: 'Sud', emoji: '⬇', score: 100 },
+    { val: 'Sud-Est', emoji: '↙', score: 95 },
+    { val: 'Sud-Ouest', emoji: '↘', score: 95 },
+    { val: 'Est', emoji: '⬅', score: 85 },
+    { val: 'Ouest', emoji: '➡', score: 85 },
+    { val: 'Nord', emoji: '⬆', score: 60 },
   ];
 
   return (
     <div className="space-y-4">
       <Card>
-        <CardHeader icon={Home} title="Caractéristiques du logement" subtitle="Type, surface et occupants" />
+        <CardHeader icon={Home} title="Caractéristiques du logement" subtitle="Type, surface et occupants" num="03" />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Field label="Type de logement">
             <div className="grid grid-cols-2 gap-2">
               {['Maison', 'Appartement'].map(t => (
                 <button key={t} onClick={() => update({ housing_type: t })}
-                  className={`py-2.5 rounded-lg font-semibold text-sm transition-all ${
+                  className={`py-2.5 rounded-md font-semibold text-sm transition-all ${
                     sim.housing_type === t
                       ? 'bg-slate-900 text-white'
-                      : 'bg-white border border-slate-200 text-slate-700 hover:border-slate-300'
+                      : 'bg-white border border-slate-200 text-slate-700 hover:border-slate-400'
                   }`}>
-                  {t === 'Maison' ? '🏡' : '🏢'} {t}
+                  {t}
                 </button>
               ))}
             </div>
@@ -822,10 +850,10 @@ function StepHousing({ sim, update }) {
           <Field label="Nombre d'occupants">
             <div className="flex items-center gap-2">
               <button onClick={() => update({ occupants: Math.max(1, (Number(sim.occupants) || 1) - 1) })}
-                className="w-10 h-10 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 font-bold text-lg text-slate-700">−</button>
+                className="w-10 h-10 rounded-md bg-white border border-slate-200 hover:bg-slate-50 font-bold text-lg text-slate-700">−</button>
               <Input type="number" value={sim.occupants} onChange={e => update({ occupants: e.target.value })} placeholder="4" className="text-center font-bold" />
               <button onClick={() => update({ occupants: (Number(sim.occupants) || 0) + 1 })}
-                className="w-10 h-10 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 font-bold text-lg text-slate-700">+</button>
+                className="w-10 h-10 rounded-md bg-white border border-slate-200 hover:bg-slate-50 font-bold text-lg text-slate-700">+</button>
             </div>
           </Field>
           <Field label="Région solaire">
@@ -837,7 +865,7 @@ function StepHousing({ sim, update }) {
       </Card>
 
       <Card>
-        <CardHeader icon={Flame} title="Énergies du logement" subtitle="Chauffage et eau chaude actuels" />
+        <CardHeader icon={Flame} title="Énergies du logement" subtitle="Chauffage et eau chaude actuels" num="04" />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Field label="Chauffage">
             <Select value={sim.heating_type} onChange={e => update({ heating_type: e.target.value })}>
@@ -855,19 +883,19 @@ function StepHousing({ sim, update }) {
       </Card>
 
       <Card>
-        <CardHeader icon={Compass} title="Toiture" subtitle="Orientation et inclinaison" />
+        <CardHeader icon={Compass} title="Toiture" subtitle="Orientation et inclinaison" num="05" />
         <Field label="Orientation">
           <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
             {orientations.map(o => (
               <button key={o.val} onClick={() => update({ roof_orientation: o.val })}
-                className={`p-2.5 rounded-lg border transition-all ${
+                className={`p-2.5 rounded-md border transition-all ${
                   sim.roof_orientation === o.val
                     ? 'border-slate-900 bg-slate-900 text-white'
-                    : 'border-slate-200 bg-white hover:border-slate-300'
+                    : 'border-slate-200 bg-white hover:border-slate-400'
                 }`}>
-                <div className="text-xl mb-0.5">{o.emoji}</div>
+                <div className="text-lg mb-0.5">{o.emoji}</div>
                 <div className={`text-[10px] font-bold ${sim.roof_orientation === o.val ? 'text-white' : 'text-slate-700'}`}>{o.val}</div>
-                <div className={`text-[9px] font-semibold ${
+                <div className={`text-[9px] font-bold mt-0.5 ${
                   sim.roof_orientation === o.val
                     ? 'text-amber-400'
                     : o.score >= 95 ? 'text-emerald-600' : o.score >= 85 ? 'text-amber-600' : 'text-red-500'
@@ -880,9 +908,9 @@ function StepHousing({ sim, update }) {
           <input
             type="range" min="0" max="60" value={sim.roof_inclination}
             onChange={e => update({ roof_inclination: Number(e.target.value) })}
-            className="w-full h-2 bg-slate-200 rounded-full appearance-none cursor-pointer accent-slate-900"
+            className="w-full h-1.5 bg-slate-200 rounded-full appearance-none cursor-pointer accent-slate-900"
           />
-          <div className="flex justify-between text-xs text-slate-400 mt-1">
+          <div className="flex justify-between text-xs text-slate-400 mt-1.5">
             <span>0° (plat)</span>
             <span className={sim.roof_inclination >= 20 && sim.roof_inclination <= 45 ? 'text-emerald-600 font-bold' : ''}>
               30° optimal
@@ -948,26 +976,26 @@ function StepAppliances({ sim, update }) {
   return (
     <div className="space-y-4">
       <Card>
-        <CardHeader icon={Zap} title="Inventaire des équipements" subtitle="Coche tous les appareils du client" />
+        <CardHeader icon={Zap} title="Inventaire des équipements" subtitle="Sélectionnez les appareils du logement" num="06" />
 
-        <div className="bg-slate-900 rounded-xl p-4 text-white mb-4 flex items-center justify-between">
+        <div className="bg-slate-900 rounded-md p-4 text-white mb-4 flex items-center justify-between">
           <div>
-            <div className="text-[11px] font-semibold opacity-70 uppercase tracking-wide">Conso estimée</div>
-            <div className="text-2xl font-bold">
+            <div className="text-[10px] font-bold opacity-70 uppercase tracking-widest">Conso estimée</div>
+            <div className="text-2xl font-bold mt-0.5">
               {Math.round(total).toLocaleString('fr-FR')}
               <span className="text-sm font-medium opacity-70 ml-1">kWh/an</span>
             </div>
           </div>
           <div className="text-right">
-            <div className="text-[11px] font-semibold opacity-70 uppercase tracking-wide">Appareils</div>
-            <div className="text-2xl font-bold text-amber-400">{apps.length}</div>
+            <div className="text-[10px] font-bold opacity-70 uppercase tracking-widest">Équipements</div>
+            <div className="text-2xl font-bold text-amber-400 mt-0.5">{apps.length}</div>
           </div>
         </div>
 
         <div className="flex gap-1.5 overflow-x-auto pb-2 -mx-1 px-1 mb-4">
           {APPLIANCE_CATEGORIES.map(cat => (
             <button key={cat.id} onClick={() => setActiveCategory(cat.id)}
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-bold whitespace-nowrap transition-all ${
                 activeCategory === cat.id
                   ? 'bg-slate-900 text-white'
                   : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
@@ -984,10 +1012,10 @@ function StepAppliances({ sim, update }) {
             const qty = getQuantity(item.name);
             return (
               <button key={i} onClick={() => toggleAppliance(item)}
-                className={`relative p-3 rounded-xl border transition-all text-left ${
+                className={`relative p-3 rounded-md border transition-all text-left ${
                   selected
                     ? 'border-slate-900 bg-slate-50'
-                    : 'border-slate-200 bg-white hover:border-slate-300'
+                    : 'border-slate-200 bg-white hover:border-slate-400'
                 }`}>
                 {selected && (
                   <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-slate-900 flex items-center justify-center">
@@ -1005,9 +1033,9 @@ function StepAppliances({ sim, update }) {
                 {selected && (
                   <div className="mt-2 flex items-center gap-1">
                     <button onClick={(e) => { e.stopPropagation(); removeOne(item.name); }}
-                      className="flex-1 py-1 rounded-md bg-white border border-slate-200 text-slate-700 text-xs font-bold hover:bg-red-50 hover:border-red-200 hover:text-red-600 transition-colors">−</button>
+                      className="flex-1 py-1 rounded bg-white border border-slate-200 text-slate-700 text-xs font-bold hover:bg-red-50 hover:border-red-200 hover:text-red-600 transition-colors">−</button>
                     <button onClick={(e) => { e.stopPropagation(); addInstance(item); }}
-                      className="flex-1 py-1 rounded-md bg-white border border-slate-200 text-slate-700 text-xs font-bold hover:bg-emerald-50 hover:border-emerald-200 hover:text-emerald-600 transition-colors">+</button>
+                      className="flex-1 py-1 rounded bg-white border border-slate-200 text-slate-700 text-xs font-bold hover:bg-emerald-50 hover:border-emerald-200 hover:text-emerald-600 transition-colors">+</button>
                   </div>
                 )}
               </button>
@@ -1018,19 +1046,19 @@ function StepAppliances({ sim, update }) {
 
       {apps.length > 0 && (
         <Card>
-          <CardHeader icon={Settings} title="Ajuste les paramètres" subtitle="Affine la consommation de chaque appareil" />
+          <CardHeader icon={Settings} title="Paramètres détaillés" subtitle="Affinez la consommation de chaque équipement" />
           <div className="space-y-2">
             {apps.map(a => {
               const kwh = Math.round((Number(a.power) * Number(a.hours) * (Number(a.days_per_week) || 7) * 52) / 1000);
               return (
-                <div key={a.id} className="bg-slate-50 rounded-lg p-3 border border-slate-100">
+                <div key={a.id} className="bg-slate-50 rounded-md p-3 border border-slate-100">
                   <div className="flex items-center justify-between gap-2 mb-2">
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       <span className="text-2xl">{a.emoji || '⚡'}</span>
                       <div className="font-bold text-slate-900 truncate text-sm">{a.name}</div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-slate-700 bg-white border border-slate-200 px-2 py-1 rounded-md whitespace-nowrap">
+                      <span className="text-xs font-bold text-slate-700 bg-white border border-slate-200 px-2 py-1 rounded whitespace-nowrap">
                         {kwh} kWh/an
                       </span>
                       <button onClick={() => update({ appliances: apps.filter(x => x.id !== a.id) })}
@@ -1041,22 +1069,22 @@ function StepAppliances({ sim, update }) {
                   </div>
                   <div className="grid grid-cols-3 gap-2">
                     <div>
-                      <label className="block text-[10px] text-slate-500 font-semibold uppercase mb-0.5">W</label>
+                      <label className="block text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-0.5">Watts</label>
                       <input type="number" value={a.power}
                         onChange={e => update({ appliances: apps.map(x => x.id === a.id ? { ...x, power: Number(e.target.value) } : x) })}
-                        className="w-full px-2 py-1.5 text-sm bg-white border border-slate-200 rounded-md outline-none focus:ring-2 focus:ring-slate-900" />
+                        className="w-full px-2 py-1.5 text-sm bg-white border border-slate-200 rounded outline-none focus:ring-2 focus:ring-slate-900" />
                     </div>
                     <div>
-                      <label className="block text-[10px] text-slate-500 font-semibold uppercase mb-0.5">h/jour</label>
+                      <label className="block text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-0.5">H/jour</label>
                       <input type="number" step="0.25" value={a.hours}
                         onChange={e => update({ appliances: apps.map(x => x.id === a.id ? { ...x, hours: Number(e.target.value) } : x) })}
-                        className="w-full px-2 py-1.5 text-sm bg-white border border-slate-200 rounded-md outline-none focus:ring-2 focus:ring-slate-900" />
+                        className="w-full px-2 py-1.5 text-sm bg-white border border-slate-200 rounded outline-none focus:ring-2 focus:ring-slate-900" />
                     </div>
                     <div>
-                      <label className="block text-[10px] text-slate-500 font-semibold uppercase mb-0.5">j/sem</label>
+                      <label className="block text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-0.5">J/sem</label>
                       <input type="number" max="7" min="1" value={a.days_per_week || 7}
                         onChange={e => update({ appliances: apps.map(x => x.id === a.id ? { ...x, days_per_week: Number(e.target.value) } : x) })}
-                        className="w-full px-2 py-1.5 text-sm bg-white border border-slate-200 rounded-md outline-none focus:ring-2 focus:ring-slate-900" />
+                        className="w-full px-2 py-1.5 text-sm bg-white border border-slate-200 rounded outline-none focus:ring-2 focus:ring-slate-900" />
                     </div>
                   </div>
                 </div>
@@ -1074,31 +1102,30 @@ function StepConsumption({ sim, update, calcs }) {
   const estimated = calcs.estimatedConsumption;
   const diff = real && estimated ? Math.abs(real - estimated) : 0;
   const diffPct = real && estimated ? Math.round((diff / Math.max(real, estimated)) * 100) : 0;
-  const monthlyBill = real ? Math.round((real * 0.25) / 12) : 0;
 
   return (
     <div className="space-y-4">
       <Card>
-        <CardHeader icon={BarChart3} title="Consommation réelle" subtitle="Saisis la conso de la dernière facture" />
+        <CardHeader icon={BarChart3} title="Consommation annuelle" subtitle="Donnée issue de la facture client" num="07" />
 
-        <Field label="Conso annuelle (kWh)" hint="Sur la facture annuelle EDF / Engie / etc.">
+        <Field label="Consommation annuelle" hint="Indiquée sur la facture annuelle de fourniture d'électricité">
           <div className="relative">
             <Input type="number" value={sim.annual_consumption_kwh}
               onChange={e => update({ annual_consumption_kwh: e.target.value })}
               placeholder="6500" className="text-2xl font-bold pr-16 py-3" />
-            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-slate-400">kWh</span>
+            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400 uppercase tracking-wider">kWh</span>
           </div>
         </Field>
 
         {real > 0 && (
           <div className="mt-4 grid grid-cols-2 gap-3">
-            <div className="bg-slate-50 rounded-lg p-3 border border-slate-100">
-              <div className="text-[10px] font-bold text-slate-500 uppercase">Facture mensuelle</div>
-              <div className="text-xl font-bold text-slate-900">~{monthlyBill}€<span className="text-xs">/mois</span></div>
+            <div className="bg-slate-50 rounded-md p-3 border border-slate-100">
+              <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Conso réelle</div>
+              <div className="text-xl font-bold text-slate-900 mt-1">{real.toLocaleString('fr-FR')}<span className="text-xs ml-1 font-medium text-slate-500">kWh</span></div>
             </div>
-            <div className="bg-slate-50 rounded-lg p-3 border border-slate-100">
-              <div className="text-[10px] font-bold text-slate-500 uppercase">Estimation appareils</div>
-              <div className="text-xl font-bold text-slate-900">{estimated.toLocaleString('fr-FR')}<span className="text-xs ml-1">kWh</span></div>
+            <div className="bg-slate-50 rounded-md p-3 border border-slate-100">
+              <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Estimation appareils</div>
+              <div className="text-xl font-bold text-slate-900 mt-1">{estimated.toLocaleString('fr-FR')}<span className="text-xs ml-1 font-medium text-slate-500">kWh</span></div>
             </div>
           </div>
         )}
@@ -1107,7 +1134,7 @@ function StepConsumption({ sim, update, calcs }) {
       {real > 0 && estimated > 0 && (
         <Card className={diffPct < 25 ? 'border-emerald-200 bg-emerald-50/40' : 'border-amber-200 bg-amber-50/40'}>
           <div className="flex items-start gap-3">
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
+            <div className={`w-10 h-10 rounded-md flex items-center justify-center flex-shrink-0 ${
               diffPct < 25 ? 'bg-emerald-600' : 'bg-amber-600'
             }`}>
               {diffPct < 25 ? <CheckCircle className="w-5 h-5 text-white" /> : <Calculator className="w-5 h-5 text-white" />}
@@ -1116,9 +1143,9 @@ function StepConsumption({ sim, update, calcs }) {
               <h3 className={`font-bold text-sm ${diffPct < 25 ? 'text-emerald-900' : 'text-amber-900'}`}>
                 {diffPct < 25 ? 'Cohérence vérifiée' : 'Écart à analyser'}
               </h3>
-              <p className={`text-sm mt-1 ${diffPct < 25 ? 'text-emerald-700' : 'text-amber-700'}`}>
+              <p className={`text-xs mt-1 ${diffPct < 25 ? 'text-emerald-700' : 'text-amber-700'}`}>
                 Écart : <strong>{diff.toLocaleString('fr-FR')} kWh ({diffPct}%)</strong>
-                {diffPct >= 25 && " — vérifie l'inventaire des appareils ou la facture client"}
+                {diffPct >= 25 && " — vérifiez l'inventaire des appareils ou la facture client"}
               </p>
             </div>
           </div>
@@ -1141,10 +1168,10 @@ function ConsoBar({ label, value, max, dark }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
-        <span className="text-xs font-bold text-slate-700 uppercase tracking-wide">{label}</span>
+        <span className="text-[10px] font-bold text-slate-700 uppercase tracking-widest">{label}</span>
         <span className="text-sm font-bold text-slate-900">{value.toLocaleString('fr-FR')} kWh</span>
       </div>
-      <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
+      <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
         <div className={`h-full rounded-full transition-all duration-500 ${dark ? 'bg-slate-900' : 'bg-amber-500'}`}
           style={{ width: `${pct}%` }} />
       </div>
@@ -1153,49 +1180,60 @@ function ConsoBar({ label, value, max, dark }) {
 }
 
 function StepSizing({ sim, update, calcs, overrideMode, setOverrideMode }) {
+  const coverage = calcs.refConsumption > 0 ? Math.round((calcs.production / calcs.refConsumption) * 100) : 0;
+
   return (
     <div className="space-y-4">
-      <div className="bg-slate-900 rounded-2xl p-5 text-white border border-slate-800">
-        <div className="flex items-center gap-2 mb-4">
-          <Sparkles className="w-4 h-4 text-amber-400" />
-          <h3 className="font-bold text-sm uppercase tracking-wide">Recommandation calculée</h3>
+      <div className="bg-slate-900 rounded-lg p-5 sm:p-6 text-white border border-slate-800">
+        <div className="flex items-center gap-2 mb-4 pb-4 border-b border-white/10">
+          <div className="w-8 h-8 rounded-md bg-white/10 flex items-center justify-center">
+            <Sparkles className="w-4 h-4 text-amber-400" />
+          </div>
+          <h3 className="font-bold text-sm uppercase tracking-widest">Préconisation technique</h3>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <div className="bg-white/5 rounded-xl p-4 border border-white/10">
-            <div className="text-[10px] opacity-70 font-bold uppercase tracking-wide mb-1">Puissance</div>
-            <div className="text-3xl sm:text-4xl font-bold text-amber-400">
+          <div>
+            <div className="text-[10px] opacity-60 font-bold uppercase tracking-widest mb-1">Puissance</div>
+            <div className="text-4xl font-bold text-amber-400">
               {calcs.recommendedKwc}
-              <span className="text-base ml-1 text-white/60">kWc</span>
+              <span className="text-base ml-1 text-white/60 font-medium">kWc</span>
             </div>
           </div>
-          <div className="bg-white/5 rounded-xl p-4 border border-white/10">
-            <div className="text-[10px] opacity-70 font-bold uppercase tracking-wide mb-1">Panneaux</div>
-            <div className="text-3xl sm:text-4xl font-bold text-amber-400">{calcs.recommendedPanels}</div>
+          <div>
+            <div className="text-[10px] opacity-60 font-bold uppercase tracking-widest mb-1">Panneaux</div>
+            <div className="text-4xl font-bold text-amber-400">
+              {calcs.recommendedPanels}
+              <span className="text-base ml-1 text-white/60 font-medium">u.</span>
+            </div>
           </div>
         </div>
-        <div className="mt-3 grid grid-cols-2 gap-2 text-xs opacity-80">
-          <div className="flex items-center gap-1.5">
-            <Sun className="w-3.5 h-3.5 text-amber-400" />
-            {calcs.productionPerKwc} kWh/kWc/an
+        <div className="mt-4 pt-4 border-t border-white/10 grid grid-cols-3 gap-3 text-xs">
+          <div>
+            <div className="opacity-60 font-bold uppercase tracking-wider text-[10px]">Production</div>
+            <div className="font-bold text-white mt-0.5">{calcs.production.toLocaleString('fr-FR')} kWh</div>
           </div>
-          <div className="flex items-center gap-1.5">
-            <TrendingUp className="w-3.5 h-3.5 text-amber-400" />
-            ~{calcs.production.toLocaleString('fr-FR')} kWh produits
+          <div>
+            <div className="opacity-60 font-bold uppercase tracking-wider text-[10px]">Couverture</div>
+            <div className="font-bold text-white mt-0.5">{coverage}%</div>
+          </div>
+          <div>
+            <div className="opacity-60 font-bold uppercase tracking-wider text-[10px]">Autoconso</div>
+            <div className="font-bold text-amber-400 mt-0.5">{calcs.selfConsumptionRate}%</div>
           </div>
         </div>
       </div>
 
       <Card>
-        <CardHeader icon={Settings} title="Configuration des panneaux" subtitle="Puissance unitaire par panneau" />
+        <CardHeader icon={Settings} title="Configuration des panneaux" subtitle="Puissance unitaire des modules" num="08" />
         <Field label="Puissance par panneau">
           <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
             {PANEL_OPTIONS.map(p => (
               <button key={p}
                 onClick={() => update({ panel_power_w: p, final_panels: null })}
-                className={`py-2.5 rounded-lg font-bold text-sm transition-all ${
+                className={`py-2.5 rounded-md font-bold text-sm transition-all ${
                   sim.panel_power_w === p
                     ? 'bg-slate-900 text-white'
-                    : 'bg-white border border-slate-200 text-slate-700 hover:border-slate-300'
+                    : 'bg-white border border-slate-200 text-slate-700 hover:border-slate-400'
                 }`}>
                 {p}W
               </button>
@@ -1205,73 +1243,88 @@ function StepSizing({ sim, update, calcs, overrideMode, setOverrideMode }) {
       </Card>
 
       <Card className={overrideMode ? 'border-amber-200 bg-amber-50/30' : ''}>
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-4 pb-4 border-b border-slate-100">
           <div className="flex items-center gap-3">
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+            <div className={`w-9 h-9 rounded-md flex items-center justify-center ${
               overrideMode ? 'bg-amber-500' : 'bg-slate-200'
             }`}>
-              <Target className={`w-5 h-5 ${overrideMode ? 'text-white' : 'text-slate-500'}`} />
+              <Target className={`w-4 h-4 ${overrideMode ? 'text-white' : 'text-slate-500'}`} />
             </div>
             <div>
-              <h3 className="font-bold text-slate-900 text-sm">Override manuel</h3>
-              <p className="text-xs text-slate-500">Définis toi-même la solution finale</p>
+              <h3 className="font-bold text-slate-900 text-sm">Ajustement manuel</h3>
+              <p className="text-xs text-slate-500">Fixer la puissance commerciale finale</p>
             </div>
           </div>
           <button onClick={() => {
             if (overrideMode) update({ final_kwc: null, final_panels: null });
             setOverrideMode(!overrideMode);
           }}
-            className={`relative w-12 h-7 rounded-full transition-colors ${overrideMode ? 'bg-slate-900' : 'bg-slate-300'}`}>
-            <div className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform ${overrideMode ? 'translate-x-5' : 'translate-x-0.5'}`} />
+            className={`relative w-11 h-6 rounded-full transition-colors ${overrideMode ? 'bg-slate-900' : 'bg-slate-300'}`}>
+            <div className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${overrideMode ? 'translate-x-5' : 'translate-x-0.5'}`} />
           </button>
         </div>
 
         {overrideMode && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Field label="kWc final">
-              <Input type="number" step="0.1" value={sim.final_kwc ?? ''}
-                onChange={e => {
-                  const kwc = numOrNull(e.target.value);
-                  const panels = kwc ? Math.ceil((kwc * 1000) / sim.panel_power_w) : null;
-                  update({ final_kwc: kwc, final_panels: panels });
-                }}
-                placeholder={`${calcs.recommendedKwc}`} className="text-lg font-bold" />
+          <>
+            <Field label="Sélection rapide" className="mb-4">
+              <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+                {KWC_TIERS.map(k => (
+                  <button key={k}
+                    onClick={() => {
+                      const panels = Math.ceil((k * 1000) / sim.panel_power_w);
+                      update({ final_kwc: k, final_panels: panels });
+                    }}
+                    className={`py-2 rounded-md font-bold text-sm transition-all ${
+                      sim.final_kwc === k
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-white border border-slate-200 text-slate-700 hover:border-slate-400'
+                    }`}>
+                    {k}
+                  </button>
+                ))}
+              </div>
             </Field>
-            <Field label="Nb panneaux">
-              <Input type="number" value={sim.final_panels ?? ''}
-                onChange={e => {
-                  const panels = intOrNull(e.target.value);
-                  const kwc = panels ? Math.round((panels * sim.panel_power_w / 1000) * 10) / 10 : null;
-                  update({ final_panels: panels, final_kwc: kwc });
-                }}
-                placeholder={`${calcs.recommendedPanels}`} className="text-lg font-bold" />
-            </Field>
-          </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field label="kWc final">
+                <Input type="number" step="0.5" value={sim.final_kwc ?? ''}
+                  onChange={e => {
+                    const kwc = numOrNull(e.target.value);
+                    const panels = kwc ? Math.ceil((kwc * 1000) / sim.panel_power_w) : null;
+                    update({ final_kwc: kwc, final_panels: panels });
+                  }}
+                  placeholder={`${calcs.recommendedKwc}`} className="text-lg font-bold" />
+              </Field>
+              <Field label="Nb panneaux">
+                <Input type="number" value={sim.final_panels ?? ''}
+                  onChange={e => {
+                    const panels = intOrNull(e.target.value);
+                    const kwc = panels ? Math.round((panels * sim.panel_power_w / 1000) * 10) / 10 : null;
+                    update({ final_panels: panels, final_kwc: kwc });
+                  }}
+                  placeholder={`${calcs.recommendedPanels}`} className="text-lg font-bold" />
+              </Field>
+            </div>
+          </>
         )}
       </Card>
 
       <Card>
-        <CardHeader icon={FileText} title="Notes & statut" subtitle="Informations complémentaires" />
-        <Field label="Notes / observations">
+        <CardHeader icon={FileText} title="Notes & statut" subtitle="Informations complémentaires" num="09" />
+        <Field label="Observations">
           <textarea value={sim.notes || ''} onChange={e => update({ notes: e.target.value })}
             placeholder="Remarques sur le projet, contraintes spécifiques..." rows={3}
-            className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all resize-y" />
+            className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-md focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all resize-y text-sm" />
         </Field>
         <Field label="Statut" className="mt-4">
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {[
-              { val: 'brouillon', emoji: '📝' },
-              { val: 'validé', emoji: '✓' },
-              { val: 'signé', emoji: '✅' },
-              { val: 'annulé', emoji: '✗' },
-            ].map(s => (
-              <button key={s.val} onClick={() => update({ status: s.val })}
-                className={`py-2.5 rounded-lg font-semibold text-sm capitalize transition-all ${
-                  sim.status === s.val
+            {['brouillon', 'validé', 'signé', 'annulé'].map(s => (
+              <button key={s} onClick={() => update({ status: s })}
+                className={`py-2.5 rounded-md font-bold text-xs uppercase tracking-wider transition-all ${
+                  sim.status === s
                     ? 'bg-slate-900 text-white'
                     : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
                 }`}>
-                {s.emoji} {s.val}
+                {s}
               </button>
             ))}
           </div>
@@ -1287,130 +1340,186 @@ function StepRecap({ sim, calcs }) {
   const finalProd = Math.round(finalKwc * calcs.productionPerKwc);
   const refConso = numOrNull(sim.annual_consumption_kwh) || calcs.estimatedConsumption;
   const surface = Math.round(finalPanels * 1.95);
-  const monthlyEcon = Math.round(calcs.savings / 12);
-  const total25y = calcs.savings * 25;
+  const coverageRate = refConso > 0 ? Math.min(999, Math.round((finalProd / refConso) * 100)) : 0;
+  const selfConsumed = Math.round(finalProd * (calcs.selfConsumptionRate / 100));
+  const today = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' });
 
   return (
     <div className="space-y-4">
-      <div className="relative bg-slate-900 rounded-2xl p-6 text-white overflow-hidden border border-slate-800">
+      {/* Hero card */}
+      <div className="relative bg-slate-900 rounded-lg p-6 text-white overflow-hidden border border-slate-800">
         <div className="absolute top-0 right-0 w-40 h-40 bg-amber-500/10 rounded-full -mr-20 -mt-20 blur-2xl" />
         <div className="relative">
-          <div className="flex items-center gap-3 mb-5">
-            <div className="w-12 h-12 bg-white/10 rounded-xl flex items-center justify-center border border-white/10">
-              <Sun className="w-6 h-6 text-amber-400" />
+          <div className="flex items-start justify-between mb-5">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 bg-white/10 rounded-md flex items-center justify-center border border-white/10">
+                <Sun className="w-5 h-5 text-amber-400" />
+              </div>
+              <div>
+                <div className="text-[10px] opacity-60 font-bold uppercase tracking-widest">Étude photovoltaïque</div>
+                <div className="text-xl sm:text-2xl font-bold leading-tight">{sim.client_name || 'Client'}</div>
+              </div>
             </div>
-            <div>
-              <div className="text-[11px] opacity-70 font-bold uppercase tracking-wide">Solution proposée</div>
-              <div className="text-xl sm:text-2xl font-bold leading-tight">{sim.client_name || 'Client'}</div>
+            <div className="text-right">
+              <div className="text-[10px] opacity-60 font-bold uppercase tracking-widest">Date</div>
+              <div className="text-xs font-semibold mt-0.5">{today}</div>
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <div className="bg-white/5 rounded-xl p-4 border border-white/10">
-              <div className="text-[10px] opacity-70 font-bold uppercase mb-1 tracking-wide">Puissance</div>
+            <div className="bg-white/5 rounded-md p-4 border border-white/10">
+              <div className="text-[10px] opacity-60 font-bold uppercase tracking-widest mb-1">Puissance</div>
               <div className="text-3xl font-bold text-amber-400">
                 {finalKwc}
-                <span className="text-base ml-1 text-white/60">kWc</span>
+                <span className="text-base ml-1 text-white/60 font-medium">kWc</span>
               </div>
             </div>
-            <div className="bg-white/5 rounded-xl p-4 border border-white/10">
-              <div className="text-[10px] opacity-70 font-bold uppercase mb-1 tracking-wide">Panneaux</div>
+            <div className="bg-white/5 rounded-md p-4 border border-white/10">
+              <div className="text-[10px] opacity-60 font-bold uppercase tracking-widest mb-1">Panneaux</div>
               <div className="text-3xl font-bold text-amber-400">
                 {finalPanels}
-                <span className="text-base ml-1 text-white/60">×{sim.panel_power_w}W</span>
+                <span className="text-base ml-1 text-white/60 font-medium">×{sim.panel_power_w}W</span>
               </div>
             </div>
           </div>
 
           <div className="grid grid-cols-3 gap-2 mt-3">
             <MiniStat label="Production" value={finalProd.toLocaleString('fr-FR')} unit="kWh/an" />
-            <MiniStat label="Économies" value={`~${calcs.savings.toLocaleString('fr-FR')}`} unit="€/an" />
-            <MiniStat label="CO₂ évité" value={calcs.co2Saved.toLocaleString('fr-FR')} unit="kg/an" />
+            <MiniStat label="Autoconso" value={`${calcs.selfConsumptionRate}%`} highlight />
+            <MiniStat label="Couverture" value={`${coverageRate}%`} />
           </div>
         </div>
       </div>
 
+      {/* KPIs */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <BigStat icon={TrendingUp} label="Autoconso" value={`${calcs.selfConsumptionRate}%`} />
-        <BigStat icon={Euro} label="Mensuel" value={`${monthlyEcon}€`} accent />
-        <BigStat icon={Leaf} label="25 ans" value={`${(total25y / 1000).toFixed(0)}k€`} />
-        <BigStat icon={Home} label="Surface" value={`${surface}m²`} />
+        <BigStat icon={TrendingUp} label="Autoconso" value={`${calcs.selfConsumptionRate}%`} accent />
+        <BigStat icon={Activity} label="Autoconsommé" value={selfConsumed.toLocaleString('fr-FR')} unit="kWh" />
+        <BigStat icon={Gauge} label="Couverture" value={`${coverageRate}%`} />
+        <BigStat icon={Home} label="Surface" value={surface} unit="m²" />
       </div>
 
+      {/* Détails techniques */}
       <Card>
-        <CardHeader icon={FileText} title="Détails du projet" subtitle="Récapitulatif complet" />
-        <dl className="space-y-1">
-          <Row label="Client" value={sim.client_name} />
-          <Row label="Contact" value={[sim.client_phone, sim.client_email].filter(Boolean).join(' · ')} />
-          <Row label="Adresse" value={[sim.client_address, sim.client_postal_code, sim.client_city].filter(Boolean).join(', ')} />
-          <Row label="Logement" value={`${sim.housing_type}${sim.surface_m2 ? ` · ${sim.surface_m2} m²` : ''}${sim.occupants ? ` · ${sim.occupants} occ.` : ''}`} />
-          <Row label="Toiture" value={`${sim.roof_orientation} · ${sim.roof_inclination}°`} />
-          <Row label="Région" value={`${sim.region} (${REGIONS[sim.region]} kWh/kWc/an)`} />
-          <Row label="Conso annuelle" value={`${refConso.toLocaleString('fr-FR')} kWh`} />
-          <Row label="Chauffage" value={sim.heating_type} />
-          <Row label="Eau chaude" value={sim.hot_water_type} />
-          <Row label="Appareils" value={`${(sim.appliances || []).length} équipements`} />
-        </dl>
+        <CardHeader icon={FileText} title="Détails techniques" subtitle="Récapitulatif complet de l'étude" />
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
+          <Section title="Client">
+            <Row label="Nom" value={sim.client_name} />
+            <Row label="Téléphone" value={sim.client_phone} />
+            <Row label="Email" value={sim.client_email} />
+            <Row label="Adresse" value={[sim.client_address, sim.client_postal_code, sim.client_city].filter(Boolean).join(', ')} />
+          </Section>
+
+          <Section title="Bien immobilier">
+            <Row label="Type" value={sim.housing_type} />
+            <Row label="Surface" value={sim.surface_m2 ? `${sim.surface_m2} m²` : null} />
+            <Row label="Occupants" value={sim.occupants} />
+            <Row label="Chauffage" value={sim.heating_type} />
+            <Row label="Eau chaude" value={sim.hot_water_type} />
+          </Section>
+
+          <Section title="Toiture">
+            <Row label="Orientation" value={sim.roof_orientation} />
+            <Row label="Inclinaison" value={`${sim.roof_inclination}°`} />
+            <Row label="Région solaire" value={sim.region} />
+            <Row label="Ensoleillement" value={`${REGIONS[sim.region]} kWh/kWc/an`} />
+          </Section>
+
+          <Section title="Installation">
+            <Row label="Puissance" value={`${finalKwc} kWc`} />
+            <Row label="Nb panneaux" value={`${finalPanels} × ${sim.panel_power_w}W`} />
+            <Row label="Surface panneaux" value={`~${surface} m²`} />
+            <Row label="Production estimée" value={`${finalProd.toLocaleString('fr-FR')} kWh/an`} />
+            <Row label="Conso annuelle" value={`${refConso.toLocaleString('fr-FR')} kWh`} />
+            <Row label="Équipements" value={`${(sim.appliances || []).length} équipements identifiés`} />
+          </Section>
+        </div>
+
         {sim.notes && (
-          <div className="mt-4 pt-4 border-t border-slate-100">
-            <div className="text-xs font-bold text-slate-500 uppercase mb-1.5 tracking-wide">Notes</div>
-            <div className="text-sm text-slate-700 whitespace-pre-wrap bg-slate-50 rounded-lg p-3">{sim.notes}</div>
+          <div className="mt-5 pt-5 border-t border-slate-100">
+            <div className="text-[10px] font-bold text-slate-500 uppercase mb-2 tracking-widest">Observations</div>
+            <div className="text-sm text-slate-700 whitespace-pre-wrap bg-slate-50 rounded-md p-3 border border-slate-100">{sim.notes}</div>
           </div>
         )}
       </Card>
 
+      {/* Impact environnemental */}
       <Card className="bg-emerald-50/40 border-emerald-200">
-        <div className="flex items-center gap-3 mb-3">
-          <div className="w-10 h-10 rounded-xl bg-emerald-600 flex items-center justify-center">
-            <Leaf className="w-5 h-5 text-white" />
+        <div className="flex items-center gap-3 mb-4 pb-4 border-b border-emerald-100">
+          <div className="w-9 h-9 rounded-md bg-emerald-600 flex items-center justify-center">
+            <Leaf className="w-4 h-4 text-white" />
           </div>
           <div>
-            <h3 className="font-bold text-emerald-900 text-sm">Impact écologique</h3>
-            <p className="text-xs text-emerald-700">Sur la durée de vie de 25 ans</p>
+            <h3 className="font-bold text-emerald-900 text-sm">Impact environnemental</h3>
+            <p className="text-xs text-emerald-700">Estimation sur la durée de vie de 25 ans</p>
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="bg-white rounded-lg p-3 border border-emerald-100">
-            <div className="text-2xl font-bold text-emerald-700">{(calcs.co2Saved * 25 / 1000).toFixed(1)} t</div>
-            <div className="text-xs text-emerald-600">CO₂ évité</div>
+        <div className="grid grid-cols-3 gap-3">
+          <div className="bg-white rounded-md p-3 border border-emerald-100">
+            <div className="text-2xl font-bold text-emerald-700">{calcs.co2Saved.toLocaleString('fr-FR')}</div>
+            <div className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider mt-0.5">kg CO₂ /an</div>
           </div>
-          <div className="bg-white rounded-lg p-3 border border-emerald-100">
+          <div className="bg-white rounded-md p-3 border border-emerald-100">
+            <div className="text-2xl font-bold text-emerald-700">{(calcs.co2Saved * 25 / 1000).toFixed(1)} t</div>
+            <div className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider mt-0.5">CO₂ évité 25 ans</div>
+          </div>
+          <div className="bg-white rounded-md p-3 border border-emerald-100">
             <div className="text-2xl font-bold text-emerald-700">{Math.round(calcs.co2Saved * 25 / 22)}</div>
-            <div className="text-xs text-emerald-600">arbres équivalents 🌳</div>
+            <div className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider mt-0.5">arbres équiv.</div>
           </div>
         </div>
       </Card>
-    </div>
-  );
-}
 
-function MiniStat({ label, value, unit }) {
-  return (
-    <div className="bg-white/5 rounded-lg p-2.5 border border-white/10">
-      <div className="text-[10px] opacity-70 font-bold uppercase tracking-wide">{label}</div>
-      <div className="text-base font-bold leading-tight">{value}</div>
-      <div className="text-[10px] opacity-60">{unit}</div>
-    </div>
-  );
-}
-
-function BigStat({ icon: Icon, label, value, accent }) {
-  return (
-    <div className="bg-white rounded-xl p-3 border border-slate-200">
-      <div className={`w-9 h-9 rounded-lg flex items-center justify-center mb-2 ${accent ? 'bg-slate-900 text-amber-400' : 'bg-slate-100 text-slate-700'}`}>
-        <Icon className="w-4 h-4" />
+      {/* Footer document */}
+      <div className="text-center pt-2">
+        <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-widest">
+          Étude établie le {today} · Document à valeur indicative
+        </div>
       </div>
-      <div className="text-[10px] text-slate-500 font-bold uppercase tracking-wide">{label}</div>
-      <div className="text-base sm:text-lg font-bold text-slate-900 leading-tight">{value}</div>
+    </div>
+  );
+}
+
+function Section({ title, children }) {
+  return (
+    <div className="py-2">
+      <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 pb-1.5 border-b border-slate-100">{title}</div>
+      <dl className="space-y-0.5">{children}</dl>
+    </div>
+  );
+}
+
+function MiniStat({ label, value, unit, highlight }) {
+  return (
+    <div className={`rounded-md p-2.5 border ${highlight ? 'bg-amber-500/10 border-amber-500/30' : 'bg-white/5 border-white/10'}`}>
+      <div className={`text-[9px] font-bold uppercase tracking-widest ${highlight ? 'text-amber-400' : 'opacity-60'}`}>{label}</div>
+      <div className={`text-base font-bold leading-tight mt-0.5 ${highlight ? 'text-amber-400' : ''}`}>{value}</div>
+      {unit && <div className="text-[9px] opacity-50">{unit}</div>}
+    </div>
+  );
+}
+
+function BigStat({ icon: Icon, label, value, unit, accent }) {
+  return (
+    <div className="bg-white rounded-lg p-3 sm:p-4 border border-slate-200">
+      <div className={`w-8 h-8 rounded-md flex items-center justify-center mb-2 ${accent ? 'bg-slate-900 text-amber-400' : 'bg-slate-100 text-slate-700'}`}>
+        <Icon className="w-3.5 h-3.5" />
+      </div>
+      <div className="text-[9px] sm:text-[10px] text-slate-500 font-bold uppercase tracking-widest">{label}</div>
+      <div className="text-base sm:text-lg font-bold text-slate-900 leading-tight mt-0.5">
+        {value}
+        {unit && <span className="text-xs ml-1 text-slate-500 font-medium">{unit}</span>}
+      </div>
     </div>
   );
 }
 
 function Row({ label, value }) {
   return (
-    <div className="flex items-start justify-between gap-3 py-2 border-b border-slate-100 last:border-0">
-      <dt className="text-slate-500 text-xs uppercase tracking-wide font-bold flex-shrink-0">{label}</dt>
-      <dd className="text-slate-900 font-semibold text-right text-sm">{value || '—'}</dd>
+    <div className="flex items-start justify-between gap-3 py-1.5 text-xs">
+      <dt className="text-slate-500 font-semibold flex-shrink-0">{label}</dt>
+      <dd className="text-slate-900 font-bold text-right">{value || '—'}</dd>
     </div>
   );
 }
