@@ -1955,6 +1955,11 @@ async function generatePDF(sim, calcs, profile) {
   .calepinage img { width: 100%; height: auto; display: block; border: 1px solid #e2e8f0; border-radius: 6px; }
   .calepinage-caption { font-size: 7.5pt; color: #94a3b8; margin-top: 6px; text-align: center; letter-spacing: 0.5px; }
   .calepinage-error { padding: 18px; background: #fef3c7; border: 1px solid #fde68a; border-radius: 6px; color: #92400e; font-size: 9pt; text-align: center; line-height: 1.5; }
+  .eligibility { display: flex; align-items: center; gap: 14px; background: #ecfdf5; border: 2px solid #10b981; border-radius: 8px; padding: 14px 18px; margin: 18px 0; page-break-inside: avoid; }
+  .eligibility-badge { width: 44px; height: 44px; border-radius: 50%; background: #10b981; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 22pt; font-weight: 800; flex-shrink: 0; }
+  .eligibility-text .label { font-size: 7pt; font-weight: 800; text-transform: uppercase; letter-spacing: 2px; color: #047857; margin-bottom: 2px; }
+  .eligibility-text .title { font-size: 14pt; font-weight: 800; color: #064e3b; line-height: 1.2; }
+  .eligibility-text .sub { font-size: 8.5pt; color: #047857; margin-top: 3px; }
 </style>
 </head>
 <body>
@@ -1998,6 +2003,15 @@ async function generatePDF(sim, calcs, profile) {
       <div class="label">Surface panneaux</div>
       <div class="value">${surface} m²</div>
     </div>
+  </div>
+</div>
+
+<div class="eligibility">
+  <div class="eligibility-badge">✓</div>
+  <div class="eligibility-text">
+    <div class="label">Statut administratif</div>
+    <div class="title">Éligible à un montage de candidature</div>
+    <div class="sub">Cette installation répond aux critères techniques pour le dépôt d'un dossier d'aide ou de prime.</div>
   </div>
 </div>
 
@@ -3468,6 +3482,22 @@ function StepRecap({ sim, calcs, profile }) {
               Cible commerciale (étape 5) : {targetKwc} kWc / {targetPanels} panneaux — ajusté lors du calepinage.
             </div>
           )}
+        </div>
+      </div>
+
+      {/* Eligibility badge — prominent, professional */}
+      <div className="bg-emerald-50 border-2 border-emerald-500 rounded-lg p-5 flex items-center gap-4 shadow-sm">
+        <div className="w-14 h-14 rounded-full bg-emerald-500 flex items-center justify-center flex-shrink-0 shadow-md">
+          <CheckCircle className="w-8 h-8 text-white" strokeWidth={2.5} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[10px] font-bold uppercase tracking-widest text-emerald-700 mb-0.5">Statut administratif</div>
+          <div className="text-lg sm:text-xl font-extrabold text-emerald-900 leading-tight">
+            Éligible à un montage de candidature
+          </div>
+          <div className="text-xs text-emerald-700 mt-1">
+            Cette installation répond aux critères techniques pour le dépôt d'un dossier d'aide ou de prime.
+          </div>
         </div>
       </div>
 
