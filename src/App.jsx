@@ -2911,10 +2911,10 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
   const mapDivRef = useRef(null);
   const mapRef = useRef(null);
   const polygonsRef = useRef([]);
-  const buildingMarkerRef = useRef(null);
   const [mapReady, setMapReady] = useState(false);
   const [mapError, setMapError] = useState(null);
   const [activePreset, setActivePreset] = useState('optimal'); // optimal | maximum | esthetique
+  const [isCustomSelection, setIsCustomSelection] = useState(false); // true once user has clicked individual panels
 
   const rd = sim.roof_data?.solarPotential;
   const targetPanels = sim.final_panels ?? calcs.recommendedPanels ?? 0;
@@ -2950,15 +2950,46 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
   // We treat "user has edited" as "selected_panels is set AND doesn't match any of the 3 presets".
   const applyPreset = (key) => {
     setActivePreset(key);
+    setIsCustomSelection(false);
     update({ selected_panels: presets[key] });
-    showToast(`Preset "${key === 'optimal' ? 'Optimal' : key === 'maximum' ? 'Maximum' : 'Esthétique'}" appliqué`);
+    showToast(`Preset « ${key === 'optimal' ? 'Optimal' : key === 'maximum' ? 'Maximum' : 'Esthétique'} » appliqué`);
   };
 
-  // Default selected_panels when none set yet and roof_data just landed
+  // Toggle a single panel in/out of the selection. Once called, the selection becomes
+  // "custom" — no preset is highlighted until the user clicks Réinitialiser.
+  const togglePanel = (idx) => {
+    const current = sim.selected_panels?.length ? sim.selected_panels : (presets[activePreset] || []);
+    const set = new Set(current);
+    if (set.has(idx)) set.delete(idx);
+    else set.add(idx);
+    const next = Array.from(set).sort((a, b) => a - b);
+    setIsCustomSelection(true);
+    update({ selected_panels: next });
+  };
+
+  // When roof_data lands, sync activePreset / isCustomSelection with the saved selection.
+  // - No saved selection -> apply the Optimal preset.
+  // - Saved selection matches a preset -> highlight that preset.
+  // - Saved selection matches no preset -> flag as custom (Reset button shown).
   useEffect(() => {
     if (!rd) return;
-    if (sim.selected_panels?.length) return;
-    update({ selected_panels: presets.optimal });
+    if (!sim.selected_panels?.length) {
+      update({ selected_panels: presets.optimal });
+      setActivePreset('optimal');
+      setIsCustomSelection(false);
+      return;
+    }
+    const sel = [...sim.selected_panels].sort((a, b) => a - b);
+    const eq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+    const matchKey = ['optimal', 'esthetique', 'maximum'].find(k =>
+      eq(sel, [...presets[k]].sort((a, b) => a - b))
+    );
+    if (matchKey) {
+      setActivePreset(matchKey);
+      setIsCustomSelection(false);
+    } else {
+      setIsCustomSelection(true);
+    }
   }, [rd]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Live stats for the currently displayed panels
@@ -2998,29 +3029,13 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
           gestureHandling: 'greedy',
         });
         mapRef.current = map;
-        // Drop a small marker on the building center
-        buildingMarkerRef.current = new google.maps.Marker({
-          position: center,
-          map,
-          icon: {
-            path: google.maps.SymbolPath.CIRCLE,
-            scale: 6,
-            fillColor: '#f59e0b',
-            fillOpacity: 1,
-            strokeColor: '#0f172a',
-            strokeWeight: 2,
-          },
-        });
         setMapReady(true);
       })
       .catch(err => { if (!cancelled) setMapError(err.message || 'Erreur de chargement carte'); });
     return () => {
       cancelled = true;
-      // Clean up polygons & marker
       polygonsRef.current.forEach(p => p.setMap?.(null));
       polygonsRef.current = [];
-      buildingMarkerRef.current?.setMap?.(null);
-      buildingMarkerRef.current = null;
       mapRef.current = null;
       setMapReady(false);
     };
@@ -3050,9 +3065,18 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
         strokeOpacity: 1,
         strokeWeight: 1.2,
         fillColor: isSelected ? '#f59e0b' : '#64748b',
-        fillOpacity: isSelected ? 0.65 : 0.18,
-        clickable: false, // edition arrives in sprint 3
+        fillOpacity: isSelected ? 0.65 : 0.22,
+        clickable: true,
         map,
+      });
+      // Click toggles the panel in/out of the selection
+      poly.addListener('click', () => togglePanel(idx));
+      // Subtle hover feedback
+      poly.addListener('mouseover', () => {
+        poly.setOptions({ strokeWeight: 2.5, fillOpacity: isSelected ? 0.85 : 0.45 });
+      });
+      poly.addListener('mouseout', () => {
+        poly.setOptions({ strokeWeight: 1.2, fillOpacity: isSelected ? 0.65 : 0.22 });
       });
       polygonsRef.current.push(poly);
     });
@@ -3136,16 +3160,17 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
   }
 
   // ---------- Main render ----------
+  const presetIsActive = (key) => activePreset === key && !isCustomSelection;
   const presetButton = (key, label, icon, sub) => (
     <button
       onClick={() => applyPreset(key)}
-      className={`flex-1 p-3 rounded-md border text-left transition-all ${activePreset === key ? 'border-slate-900 bg-slate-900 text-white shadow-sm' : 'border-slate-200 bg-white hover:border-slate-400 text-slate-700'}`}
+      className={`flex-1 p-3 rounded-md border text-left transition-all ${presetIsActive(key) ? 'border-slate-900 bg-slate-900 text-white shadow-sm' : 'border-slate-200 bg-white hover:border-slate-400 text-slate-700'}`}
     >
       <div className="flex items-center gap-2 mb-1">
         {icon}
         <span className="text-sm font-bold">{label}</span>
       </div>
-      <div className={`text-[10px] ${activePreset === key ? 'text-amber-400' : 'text-slate-500'}`}>{sub}</div>
+      <div className={`text-[10px] ${presetIsActive(key) ? 'text-amber-400' : 'text-slate-500'}`}>{sub}</div>
     </button>
   );
 
@@ -3171,10 +3196,28 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
         </div>
 
         {/* Preset buttons */}
-        <div className="flex flex-col sm:flex-row gap-2 mb-4">
+        <div className="flex flex-col sm:flex-row gap-2 mb-3">
           {presetButton('optimal', 'Optimal', <Target className="w-4 h-4" />, `Top ${presets.optimal.length} panneaux les plus rentables`)}
           {presetButton('esthetique', 'Esthétique', <Sparkles className="w-4 h-4" />, `${presets.esthetique.length} panneaux groupés (versant principal)`)}
           {presetButton('maximum', 'Maximum', <Flame className="w-4 h-4" />, `${presets.maximum.length} panneaux possibles sur le toit`)}
+        </div>
+
+        {/* Edit hint + custom-selection badge */}
+        <div className="flex items-center justify-between gap-2 mb-3 text-xs">
+          <span className="text-slate-500 flex items-center gap-1.5">
+            <Edit className="w-3.5 h-3.5" />
+            Cliquez sur un panneau pour l'ajouter ou le retirer
+          </span>
+          {isCustomSelection && (
+            <button
+              onClick={() => applyPreset(activePreset)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 border border-amber-200 text-amber-800 font-bold hover:bg-amber-100 transition-colors"
+              title={`Restaurer le preset ${activePreset === 'optimal' ? 'Optimal' : activePreset === 'maximum' ? 'Maximum' : 'Esthétique'}`}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+              Sélection personnalisée — Réinitialiser
+            </button>
+          )}
         </div>
 
         {/* Map */}
