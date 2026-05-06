@@ -3,6 +3,8 @@ import { Sun, Plus, Trash2, Save, FileText, Search, ChevronRight, ChevronLeft, H
 
 const SUPABASE_URL = 'https://yxfanlgklvpdpsrzcoqy.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_SA4vTbf1FfOH2YNHtw3LJg_geqlOxpV';
+// Google Cloud — Solar API + Maps JavaScript + Geocoding (key restricted by HTTP referrer)
+const GOOGLE_MAPS_API_KEY = 'AIzaSyAC7jAPP00pgjD4pCxqPTeS5aeHe68kto0';
 
 const REGIONS = {
   'Nord / Hauts-de-France': 950,
@@ -104,6 +106,7 @@ const STEPS = [
 const initialSim = {
   client_name: '', client_phone: '', client_email: '',
   client_address: '', client_postal_code: '', client_city: '',
+  lat: null, lon: null,
   housing_type: 'Maison', surface_m2: '', occupants: '',
   region: 'Île-de-France',
   heating_type: 'Électrique', hot_water_type: 'Ballon électrique',
@@ -112,6 +115,7 @@ const initialSim = {
   appliances: [],
   panel_power_w: 425,
   final_kwc: null, final_panels: null,
+  roof_data: null, selected_panels: null,
   notes: '', status: 'brouillon',
 };
 
@@ -151,6 +155,30 @@ async function apiCall(path, options = {}) {
     }
   }
   throw lastErr || new Error('Network error');
+}
+
+// ============ GOOGLE SOLAR API ============
+// Calls Solar API buildingInsights endpoint to get roof segments + available panel placements.
+// Throws Error('NOT_COVERED') if the building is not in Solar API coverage (404 from Google).
+async function fetchSolarBuildingInsights(lat, lon) {
+  const url = `https://solar.googleapis.com/v1/buildingInsights:findClosest`
+    + `?location.latitude=${encodeURIComponent(lat)}`
+    + `&location.longitude=${encodeURIComponent(lon)}`
+    + `&requiredQuality=HIGH`
+    + `&key=${GOOGLE_MAPS_API_KEY}`;
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    throw new Error('NETWORK');
+  }
+  if (res.status === 404) throw new Error('NOT_COVERED');
+  if (res.status === 403) throw new Error('FORBIDDEN');
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Solar API ${res.status}: ${text.slice(0, 120)}`);
+  }
+  return res.json();
 }
 
 // ============ MAIN APP ============
@@ -353,6 +381,8 @@ function MainApp({ session, profile, onLogout }) {
   const [isDirty, setIsDirty] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState(null);
   const [autosaveStatus, setAutosaveStatus] = useState('idle'); // 'idle' | 'pending' | 'saving' | 'saved' | 'error'
+  // Solar API pre-fetch state — kicked off as soon as an address yields lat/lon
+  const [roofFetchStatus, setRoofFetchStatus] = useState('idle'); // 'idle' | 'loading' | 'ready' | 'not_covered' | 'error'
 
   // Live errors for the current step (always computed, only shown if step has been attempted)
   const currentStepErrors = useMemo(() => validateStep(step, currentSim), [step, currentSim]);
@@ -432,6 +462,10 @@ function MainApp({ session, profile, onLogout }) {
         client_address: currentSim.client_address || null,
         client_postal_code: currentSim.client_postal_code || null,
         client_city: currentSim.client_city || null,
+        lat: currentSim.lat ?? null,
+        lon: currentSim.lon ?? null,
+        roof_data: currentSim.roof_data ?? null,
+        selected_panels: currentSim.selected_panels ?? null,
         housing_type: currentSim.housing_type,
         surface_m2: numOrNull(currentSim.surface_m2),
         occupants: intOrNull(currentSim.occupants),
@@ -564,7 +598,56 @@ function MainApp({ session, profile, onLogout }) {
     setAutosaveStatus('idle');
     setLastSavedAt(currentSim.id ? Date.parse(currentSim.updated_at || currentSim.created_at || '') || null : null);
     setStepsAttempted({});
+    // If the loaded sim already has roof data tagged with matching coords, we can short-circuit.
+    // Otherwise leave roofFetchStatus at 'idle' — it will be set by the prefetch effect below.
+    if (currentSim.roof_data && currentSim.roof_data._lat === currentSim.lat && currentSim.roof_data._lon === currentSim.lon) {
+      setRoofFetchStatus('ready');
+    } else {
+      setRoofFetchStatus('idle');
+    }
   }, [currentSim.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ============ SOLAR API PRE-FETCH ============
+  // As soon as we have lat/lon (set when the user picks an address), kick off the Solar API call
+  // in the background so by the time the user reaches the Calepinage step the data is ready.
+  useEffect(() => {
+    if (view !== 'edit') return;
+    if (currentSim.lat == null || currentSim.lon == null) return;
+    // Already have fresh data for this exact location -> skip
+    if (
+      currentSim.roof_data
+      && currentSim.roof_data._lat === currentSim.lat
+      && currentSim.roof_data._lon === currentSim.lon
+    ) {
+      setRoofFetchStatus('ready');
+      return;
+    }
+    let cancelled = false;
+    setRoofFetchStatus('loading');
+    fetchSolarBuildingInsights(currentSim.lat, currentSim.lon)
+      .then(data => {
+        if (cancelled) return;
+        // Tag with the coords used to detect when the user changes address
+        const tagged = { ...data, _lat: currentSim.lat, _lon: currentSim.lon, _fetchedAt: Date.now() };
+        // Use functional update to avoid setting isDirty for this background call
+        setCurrentSim(prev => ({ ...prev, roof_data: tagged }));
+        setIsDirty(true); // mark dirty so autosave persists it
+        setRoofFetchStatus('ready');
+      })
+      .catch(err => {
+        if (cancelled) return;
+        if (err.message === 'NOT_COVERED') {
+          setRoofFetchStatus('not_covered');
+        } else if (err.message === 'FORBIDDEN') {
+          console.error('Solar API forbidden — check key restrictions / billing', err);
+          setRoofFetchStatus('error');
+        } else {
+          console.error('Solar API error:', err);
+          setRoofFetchStatus('error');
+        }
+      });
+    return () => { cancelled = true; };
+  }, [currentSim.lat, currentSim.lon, view]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const filteredSims = useMemo(() => {
     let result = simulations;
@@ -885,7 +968,7 @@ function MainApp({ session, profile, onLogout }) {
       </header>
 
       <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
-        {step === 1 && <StepClient sim={currentSim} update={updateSim} showToast={showToast} errors={visibleErrors} />}
+        {step === 1 && <StepClient sim={currentSim} update={updateSim} showToast={showToast} errors={visibleErrors} roofFetchStatus={roofFetchStatus} />}
         {step === 2 && <StepHousing sim={currentSim} update={updateSim} errors={visibleErrors} />}
         {step === 3 && <StepAppliances sim={currentSim} update={updateSim} />}
         {step === 4 && <StepConsumption sim={currentSim} update={updateSim} calcs={calcs} />}
@@ -1806,6 +1889,26 @@ function Toast({ toast }) {
   );
 }
 
+// Discreet status pill shown on the address card so the commercial knows the satellite analysis
+// is being prepared for the calepinage step.
+function SatelliteAnalysisBadge({ status, hasCoords }) {
+  if (!hasCoords && status === 'idle') return null;
+  const variants = {
+    idle: { cls: 'text-slate-500 bg-slate-50 border-slate-200', icon: <MapPin className="w-3.5 h-3.5" />, text: 'Sélectionnez une adresse pour activer l\'analyse satellite' },
+    loading: { cls: 'text-slate-700 bg-slate-50 border-slate-200', icon: <Loader2 className="w-3.5 h-3.5 animate-spin" />, text: 'Analyse satellite du toit en cours…' },
+    ready: { cls: 'text-emerald-700 bg-emerald-50 border-emerald-200', icon: <CheckCircle className="w-3.5 h-3.5" />, text: 'Toit détecté — calepinage disponible à l\'étape 6' },
+    not_covered: { cls: 'text-amber-700 bg-amber-50 border-amber-200', icon: <AlertCircle className="w-3.5 h-3.5" />, text: 'Cette zone n\'est pas couverte par l\'analyse satellite Google. Le calepinage manuel restera possible.' },
+    error: { cls: 'text-red-700 bg-red-50 border-red-200', icon: <X className="w-3.5 h-3.5" />, text: 'Échec de l\'analyse satellite. Vérifiez la connexion ou réessayez plus tard.' },
+  };
+  const v = variants[status] || variants.idle;
+  return (
+    <div className={`flex items-center gap-2 px-3.5 py-2.5 rounded-md border text-xs font-semibold ${v.cls}`}>
+      <span className="flex-shrink-0">{v.icon}</span>
+      <span className="flex-1">{v.text}</span>
+    </div>
+  );
+}
+
 function SaveBadge({ dirty, status, lastSavedAt }) {
   // Live timer: re-render every 30s to refresh "il y a Xs"
   const [, setTick] = useState(0);
@@ -2062,7 +2165,7 @@ function Select({ children, className, error, ...rest }) {
 const ADDRESS_CACHE = new Map(); // key: normalized query, value: features[]
 const ADDRESS_CACHE_MAX = 50;
 
-function StepClient({ sim, update, showToast, errors = {} }) {
+function StepClient({ sim, update, showToast, errors = {}, roofFetchStatus = 'idle' }) {
   const [searching, setSearching] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
   const [showSuggest, setShowSuggest] = useState(false);
@@ -2107,7 +2210,22 @@ function StepClient({ sim, update, showToast, errors = {} }) {
       dept = num >= 20200 ? '2B' : '2A';
     }
     const region = DEPT_TO_REGION[dept] || sim.region;
-    update({ client_address: p.name || '', client_postal_code: postal, client_city: p.city || '', region });
+    // BAN returns coordinates as [lon, lat] — store separately so the calepinage
+    // step can call the Google Solar API without a second geocoding round-trip.
+    const coords = feature.geometry?.coordinates;
+    const lon = Array.isArray(coords) ? Number(coords[0]) : null;
+    const lat = Array.isArray(coords) ? Number(coords[1]) : null;
+    update({
+      client_address: p.name || '',
+      client_postal_code: postal,
+      client_city: p.city || '',
+      region,
+      lat: Number.isFinite(lat) ? lat : null,
+      lon: Number.isFinite(lon) ? lon : null,
+      // Drop any previously fetched roof data — it belongs to a different building now
+      roof_data: null,
+      selected_panels: null,
+    });
     setShowSuggest(false);
     setSuggestions([]);
     showToast(`Adresse trouvée • ${region}`);
@@ -2197,6 +2315,7 @@ function StepClient({ sim, update, showToast, errors = {} }) {
               <span className="text-xs font-bold text-slate-900 whitespace-nowrap">{REGIONS[sim.region]} kWh/kWc</span>
             </div>
           )}
+          <SatelliteAnalysisBadge status={roofFetchStatus} hasCoords={sim.lat != null && sim.lon != null} />
         </div>
       </Card>
     </div>
