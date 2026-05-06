@@ -1147,7 +1147,7 @@ function MainApp({ session, profile, onLogout }) {
                       await generatePDF(currentSim, calcs, profile, {
                         onError: (e) => showToast(`Erreur PDF : ${e.message}`, 'error'),
                       });
-                      showToast('PDF téléchargé');
+                      showToast('Fenêtre d\'impression ouverte — choisissez « Enregistrer en PDF »');
                     } finally {
                       setPdfGenerating(false);
                     }
@@ -2216,49 +2216,43 @@ async function generatePDF(sim, calcs, profile, opts = {}) {
 </div>
   `;
 
-  // === RENDER & DOWNLOAD ===
-  // Inject CSS into <head> so it definitely applies to the rendered tree, then mount the
-  // markup in a fixed-position off-screen container that html2canvas can rasterize.
-  const styleEl = document.createElement('style');
-  styleEl.setAttribute('data-pdf', 'solar-sim');
-  styleEl.textContent = css;
-  document.head.appendChild(styleEl);
-
-  const container = document.createElement('div');
-  // Off-screen but with positive top so it's still in the rendering pipeline.
-  container.style.cssText = 'position:fixed;top:0;left:-9999px;width:720px;background:#ffffff;z-index:-1;';
-  container.innerHTML = html;
-  document.body.appendChild(container);
-
-  // Force a reflow so html2canvas sees fully laid-out content
-  void container.offsetHeight;
-
-  try {
-    const html2pdf = await loadHtml2pdf();
-    await html2pdf().set({
-      margin: [8, 8, 8, 8],
-      filename,
-      image: { type: 'jpeg', quality: 0.95 },
-      html2canvas: {
-        scale: 2,
-        useCORS: true,
-        backgroundColor: '#ffffff',
-        logging: false,
-        windowWidth: 720,
-        scrollX: 0,
-        scrollY: 0,
-      },
-      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait', compress: true },
-      pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
-    }).from(container.firstElementChild).save();
-  } catch (e) {
-    console.error('PDF generation failed:', e);
-    if (opts.onError) opts.onError(e);
-    else alert('Erreur lors de la génération du PDF. Vérifiez la console.');
-  } finally {
-    if (container.parentNode) container.parentNode.removeChild(container);
-    if (styleEl.parentNode) styleEl.parentNode.removeChild(styleEl);
+  // === RENDER & PRINT ===
+  // Open a fresh window with the report and trigger the browser's print dialog.
+  // Modern browsers offer "Save as PDF" in the dialog — one click and you get a real,
+  // pixel-perfect PDF. We tried html2pdf first but its off-screen capture is unreliable
+  // (left-clipped content, blank pages between content pages).
+  const win = window.open('', '_blank');
+  if (!win) {
+    alert('Le navigateur a bloqué la fenêtre. Autorisez les popups pour cette page.');
+    return;
   }
+  win.document.write(`<!doctype html><html lang="fr"><head><meta charset="utf-8">
+    <title>${filename.replace(/\\.pdf$/, '')}</title>
+    <style>
+      @page { size: A4; margin: 12mm; }
+      html, body { margin: 0; padding: 0; background: #fff; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+      body { font-family: 'Helvetica', 'Arial', sans-serif; }
+      ${css}
+      @media print {
+        .pdf-doc { width: 100% !important; padding: 0 !important; }
+      }
+    </style>
+    </head><body>${html}</body></html>`);
+  win.document.close();
+
+  // Wait for layout + image to settle before opening the print dialog.
+  win.onload = () => {
+    const images = Array.from(win.document.images || []);
+    const fire = () => setTimeout(() => { try { win.focus(); win.print(); } catch {} }, 250);
+    if (images.length === 0) { fire(); return; }
+    let pending = images.length;
+    const settle = () => { if (--pending <= 0) fire(); };
+    images.forEach(img => {
+      if (img.complete) settle();
+      else { img.addEventListener('load', settle); img.addEventListener('error', settle); }
+    });
+    setTimeout(() => { try { win.print(); } catch {} }, 5000); // safety net
+  };
 }
 
 // ============ UI COMPONENTS ============
