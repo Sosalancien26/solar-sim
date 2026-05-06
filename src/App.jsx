@@ -123,23 +123,72 @@ const initialSim = {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// Retry with exponential backoff on network errors and 5xx.
-// Auth errors (401/403) and bad-request (4xx) are NOT retried.
-async function apiCall(path, options = {}) {
+// JWT auto-refresh: deduplicates concurrent refresh attempts so 10 parallel apiCall()
+// after token expiry only trigger ONE call to /auth/v1/token.
+let _refreshInFlight = null;
+
+async function refreshSupabaseSession() {
+  if (_refreshInFlight) return _refreshInFlight;
   const session = JSON.parse(localStorage.getItem('solar_session') || 'null');
-  const token = session?.access_token || SUPABASE_KEY;
-  const headers = {
+  if (!session?.refresh_token) return null;
+  _refreshInFlight = (async () => {
+    try {
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+        method: 'POST',
+        headers: { 'apikey': SUPABASE_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: session.refresh_token }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (!data?.access_token) return null;
+      localStorage.setItem('solar_session', JSON.stringify(data));
+      return data;
+    } catch { return null; }
+    finally { _refreshInFlight = null; }
+  })();
+  return _refreshInFlight;
+}
+
+// When refresh definitively fails, blow the session and force re-login.
+function forceLogout() {
+  localStorage.removeItem('solar_session');
+  localStorage.removeItem('solar_profile');
+  // Reload so App.jsx falls back to <LoginScreen />.
+  if (typeof window !== 'undefined') window.location.reload();
+}
+
+// Retry with exponential backoff on network errors and 5xx.
+// On 401 (JWT expired) → refresh the token once and retry; if refresh fails, force logout.
+async function apiCall(path, options = {}) {
+  const buildHeaders = (token) => ({
     'apikey': SUPABASE_KEY,
     'Authorization': `Bearer ${token}`,
     'Content-Type': 'application/json',
     ...(options.headers || {}),
-  };
+  });
+  const initialSession = JSON.parse(localStorage.getItem('solar_session') || 'null');
+  let token = initialSession?.access_token || SUPABASE_KEY;
+
   const maxAttempts = options.noRetry ? 1 : 3;
   let lastErr;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const res = await fetch(`${SUPABASE_URL}${path}`, { ...options, headers });
-      // Retry only on transient server errors
+      let res = await fetch(`${SUPABASE_URL}${path}`, { ...options, headers: buildHeaders(token) });
+
+      // JWT expired → try refresh once, then retry the same call with the fresh token.
+      if (res.status === 401 && initialSession?.refresh_token && !options._didRefresh) {
+        const refreshed = await refreshSupabaseSession();
+        if (refreshed?.access_token) {
+          token = refreshed.access_token;
+          res = await fetch(`${SUPABASE_URL}${path}`, { ...options, headers: buildHeaders(token) });
+        } else {
+          // Refresh definitively failed -> force re-login and bail.
+          forceLogout();
+          return res;
+        }
+      }
+
+      // Transient server error → backoff and retry
       if (res.status >= 500 && res.status < 600 && attempt < maxAttempts) {
         await sleep(300 * Math.pow(2, attempt - 1));
         continue;
@@ -148,7 +197,7 @@ async function apiCall(path, options = {}) {
     } catch (err) {
       lastErr = err;
       if (attempt < maxAttempts) {
-        await sleep(300 * Math.pow(2, attempt - 1)); // 300ms, 600ms, 1200ms
+        await sleep(300 * Math.pow(2, attempt - 1));
         continue;
       }
       throw err;
