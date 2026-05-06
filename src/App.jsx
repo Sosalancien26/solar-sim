@@ -207,6 +207,23 @@ async function apiCall(path, options = {}) {
   throw lastErr || new Error('Network error');
 }
 
+// ============ HTML2PDF LOADER (CDN) ============
+// We load html2pdf lazily on the first PDF generation so it doesn't bloat the initial bundle.
+let _html2pdfLoadPromise = null;
+function loadHtml2pdf() {
+  if (typeof window === 'undefined') return Promise.reject(new Error('SSR'));
+  if (window.html2pdf) return Promise.resolve(window.html2pdf);
+  if (_html2pdfLoadPromise) return _html2pdfLoadPromise;
+  _html2pdfLoadPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
+    s.onload = () => resolve(window.html2pdf);
+    s.onerror = () => { _html2pdfLoadPromise = null; reject(new Error('Échec du chargement de html2pdf')); };
+    document.head.appendChild(s);
+  });
+  return _html2pdfLoadPromise;
+}
+
 // ============ GOOGLE MAPS JS API LOADER ============
 // Singleton loader: we only ever inject the script tag once.
 let _googleMapsLoadPromise = null;
@@ -253,6 +270,39 @@ function panelToPolygon(panel, panelWidthM, panelHeightM, segmentAzimuthDeg) {
   });
 }
 
+// Google polyline encoding (algorithm 5)
+// Each coordinate becomes ~5-7 ASCII chars instead of ~22 chars in plain "lat,lng".
+// This is the same encoding google.maps.geometry.encoding.encodePath uses, and it's the
+// only practical way to fit 30+ polygons in a Static Maps URL without hitting the 8 KB limit
+// (which Google returns as a 403 instead of the documented 413 — fun quirk).
+function encodePolyline(points) {
+  const encodeNumber = (numIn) => {
+    let num = numIn;
+    let out = '';
+    while (num >= 0x20) {
+      out += String.fromCharCode((0x20 | (num & 0x1f)) + 63);
+      num = num >>> 5;
+    }
+    out += String.fromCharCode(num + 63);
+    return out;
+  };
+  const encodeSigned = (num) => {
+    let sgn = num << 1;
+    if (num < 0) sgn = ~sgn;
+    return encodeNumber(sgn);
+  };
+  let result = '';
+  let prevLat = 0, prevLng = 0;
+  for (const p of points) {
+    const lat = Math.round(p.lat * 1e5);
+    const lng = Math.round(p.lng * 1e5);
+    result += encodeSigned(lat - prevLat) + encodeSigned(lng - prevLng);
+    prevLat = lat;
+    prevLng = lng;
+  }
+  return result;
+}
+
 // Build a Google Static Maps URL with the selected panels overlaid as polygons.
 // Used for the Récap step preview and embedded as <img> in the generated PDF.
 // Returns null if there's not enough data to render.
@@ -274,19 +324,18 @@ function buildStaticMapUrl(sim, opts = {}) {
     `maptype=satellite`,
     `key=${GOOGLE_MAPS_API_KEY}`,
   ];
-  // Cap at 60 panels to stay safely under the ~8192 char URL limit Google enforces.
-  const limited = indices.slice(0, 60);
+  // With encoded polylines we can comfortably fit 100+ panels under the 8 KB URL limit.
+  const limited = indices.slice(0, 100);
   limited.forEach(idx => {
     const p = rd.solarPanels[idx];
     if (!p) return;
     const seg = segs[p.segmentIndex];
     const az = seg?.azimuthDegrees ?? 180;
-    const path = panelToPolygon(p, panelW, panelH, az);
-    // Closed polygon (Static Maps requires last point = first point for fillcolor)
-    const closed = path.concat([path[0]]);
-    const pathStr =
-      `color:0x0f172aFF|fillcolor:0xf59e0bCC|weight:1|`
-      + closed.map(pt => `${pt.lat.toFixed(7)},${pt.lng.toFixed(7)}`).join('|');
+    const corners = panelToPolygon(p, panelW, panelH, az);
+    // Closed polygon: last point must equal first for fillcolor to work.
+    const closed = corners.concat([corners[0]]);
+    const encoded = encodePolyline(closed);
+    const pathStr = `color:0x0f172aFF|fillcolor:0xf59e0bCC|weight:1|enc:${encoded}`;
     params.push(`path=${encodeURIComponent(pathStr)}`);
   });
   return `https://maps.googleapis.com/maps/api/staticmap?${params.join('&')}`;
@@ -548,6 +597,8 @@ function MainApp({ session, profile, onLogout }) {
   const [autosaveStatus, setAutosaveStatus] = useState('idle'); // 'idle' | 'pending' | 'saving' | 'saved' | 'error'
   // Solar API pre-fetch state — kicked off as soon as an address yields lat/lon
   const [roofFetchStatus, setRoofFetchStatus] = useState('idle'); // 'idle' | 'loading' | 'ready' | 'not_covered' | 'error'
+  // PDF generation state — html2pdf.js takes 2-5s so we show a spinner
+  const [pdfGenerating, setPdfGenerating] = useState(false);
 
   // Live errors for the current step (always computed, only shown if step has been attempted)
   const currentStepErrors = useMemo(() => validateStep(step, currentSim), [step, currentSim]);
@@ -1086,11 +1137,22 @@ function MainApp({ session, profile, onLogout }) {
               <SaveBadge dirty={isDirty} status={autosaveStatus} lastSavedAt={lastSavedAt} />
               {currentSim.id && step === 7 && (
                 <button
-                  onClick={() => generatePDF(currentSim, calcs, profile)}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded-md font-semibold flex items-center gap-1.5 text-sm shadow-sm"
+                  disabled={pdfGenerating}
+                  onClick={async () => {
+                    setPdfGenerating(true);
+                    try {
+                      await generatePDF(currentSim, calcs, profile, {
+                        onError: (e) => showToast(`Erreur PDF : ${e.message}`, 'error'),
+                      });
+                      showToast('PDF téléchargé');
+                    } finally {
+                      setPdfGenerating(false);
+                    }
+                  }}
+                  className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-3 py-2 rounded-md font-semibold flex items-center gap-1.5 text-sm shadow-sm"
                 >
-                  <Download className="w-4 h-4" />
-                  <span className="hidden sm:inline">PDF</span>
+                  {pdfGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                  <span className="hidden sm:inline">{pdfGenerating ? 'Génération…' : 'PDF'}</span>
                 </button>
               )}
               <button onClick={() => saveSimulation()} disabled={saving}
@@ -1837,7 +1899,7 @@ function computeAll(sim) {
 
 // ============ PDF GENERATION ============
 
-async function generatePDF(sim, calcs, profile) {
+async function generatePDF(sim, calcs, profile, opts = {}) {
   // Calepinage drives the final numbers if the user selected panels at step 6.
   const cal = getCalepinageStats(sim, calcs);
   const finalKwc = cal.kwc;
@@ -1847,28 +1909,10 @@ async function generatePDF(sim, calcs, profile) {
   const refConso = numOrNull(sim.annual_consumption_kwh) || calcs.estimatedConsumption;
   const today = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' });
   const ref = `SIM-${(sim.id || '').slice(0, 8).toUpperCase()}`;
+  const safeName = (sim.client_name || 'client').replace(/[^a-z0-9_-]/gi, '_').slice(0, 40);
+  const filename = `Etude_PV_${safeName}_${ref}.pdf`;
 
-  // Open the print window immediately with a loading screen so the user sees something happen
-  // while we fetch the satellite image. The window is replaced with the real content below.
-  const win = window.open('', '_blank');
-  if (!win) {
-    alert('Le navigateur a bloqué la fenêtre. Autorisez les popups pour cette page.');
-    return;
-  }
-  win.document.write(`<!doctype html><html><head><title>Préparation du PDF…</title>
-    <style>body{font-family:-apple-system,Segoe UI,sans-serif;background:#0f172a;color:#fff;height:100vh;margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px}
-    .spin{width:40px;height:40px;border:3px solid rgba(255,255,255,.15);border-top-color:#fbbf24;border-radius:50%;animation:s 1s linear infinite;margin-bottom:18px}
-    @keyframes s{to{transform:rotate(360deg)}}
-    h1{font-size:18pt;margin-bottom:6px;font-weight:700}
-    p{opacity:.6;font-size:11pt}</style></head>
-    <body><div class="spin"></div><h1>Préparation du PDF…</h1><p>Chargement de l'image satellite</p></body></html>`);
-  win.document.close();
-
-  // Pre-fetch the static map and inline it as a data URL.
-  // Two reasons:
-  //  1. The print window opens at about:blank — no Referer header that matches our restricted key.
-  //  2. Browsers print broken images as blank with no warning.
-  // Loading from the parent page (proper Referer) and embedding base64 sidesteps both.
+  // Pre-fetch the satellite map and inline it as a base64 data URL so html2pdf can rasterize it.
   const mapUrl = buildStaticMapUrl(sim, { size: '720x420', zoom: 20 });
   let mapDataUrl = null;
   let mapErrorMessage = null;
@@ -1899,227 +1943,281 @@ async function generatePDF(sim, calcs, profile) {
     }
   }
 
-  const html = `
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<title>Étude photovoltaïque - ${sim.client_name}</title>
-<style>
-  @page { size: A4; margin: 15mm; }
-  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; color-adjust: exact !important; }
-  body { font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; color: #0f172a; line-height: 1.5; font-size: 10pt; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 20px; border-bottom: 3px solid #0f172a; margin-bottom: 25px; }
-  .logo { display: flex; align-items: center; gap: 12px; }
-  .logo-icon { width: 48px; height: 48px; background: #0f172a; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #fbbf24; font-size: 24px; }
-  .logo-text h1 { font-size: 18pt; font-weight: 800; letter-spacing: -0.5px; }
-  .logo-text p { font-size: 8pt; color: #64748b; text-transform: uppercase; letter-spacing: 2px; font-weight: 600; }
-  .ref-block { text-align: right; font-size: 9pt; }
-  .ref-block .label { color: #64748b; text-transform: uppercase; letter-spacing: 1.5px; font-size: 7pt; font-weight: 700; }
-  .ref-block .value { font-weight: 700; font-size: 11pt; margin-bottom: 4px; }
-  .title { font-size: 22pt; font-weight: 800; letter-spacing: -1px; margin-bottom: 6px; }
-  .subtitle { color: #64748b; font-size: 11pt; margin-bottom: 25px; }
-  .hero { background: #0f172a; color: white; border-radius: 8px; padding: 25px; margin-bottom: 20px; }
-  .hero-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-  .hero-stat { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 16px; }
-  .hero-stat .label { font-size: 8pt; opacity: 0.6; text-transform: uppercase; letter-spacing: 2px; font-weight: 700; }
-  .hero-stat .value { font-size: 28pt; font-weight: 800; color: #fbbf24; line-height: 1.1; margin-top: 4px; }
-  .hero-stat .unit { font-size: 12pt; color: rgba(255,255,255,0.6); font-weight: 500; margin-left: 4px; }
-  .hero-bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 20px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.1); }
-  .hero-mini { font-size: 9pt; }
-  .hero-mini .label { opacity: 0.6; text-transform: uppercase; letter-spacing: 1.5px; font-size: 7pt; font-weight: 700; }
-  .hero-mini .value { font-weight: 700; font-size: 13pt; }
-  .hero-mini .value.accent { color: #fbbf24; }
-  .section-title { font-size: 8pt; font-weight: 800; text-transform: uppercase; letter-spacing: 2px; color: #64748b; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid #e2e8f0; }
-  .section { margin-bottom: 18px; page-break-inside: avoid; }
-  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 18px; }
-  .row { display: flex; justify-content: space-between; padding: 5px 0; font-size: 9.5pt; border-bottom: 1px dotted #e2e8f0; }
-  .row:last-child { border-bottom: none; }
-  .row .label { color: #64748b; }
-  .row .value { font-weight: 700; text-align: right; }
-  .equip-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 6px; }
-  .equip { padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; font-size: 8.5pt; display: flex; justify-content: space-between; }
-  .equip .name { font-weight: 600; }
-  .equip .kwh { color: #64748b; font-size: 7.5pt; }
-  .impact { background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px; padding: 16px; margin-bottom: 20px; }
-  .impact h3 { color: #065f46; font-size: 11pt; margin-bottom: 12px; }
-  .impact-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-  .impact-stat { background: white; border: 1px solid #a7f3d0; border-radius: 6px; padding: 10px; text-align: center; }
-  .impact-stat .value { font-size: 18pt; font-weight: 800; color: #047857; }
-  .impact-stat .label { font-size: 7pt; color: #047857; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 700; margin-top: 4px; }
-  .footer { margin-top: 30px; padding-top: 15px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 7.5pt; color: #94a3b8; line-height: 1.6; }
-  .footer strong { color: #475569; }
-  .notes { background: #f8fafc; border-left: 3px solid #0f172a; padding: 10px 14px; margin: 15px 0; font-size: 9pt; }
-  .notes-title { font-size: 7.5pt; text-transform: uppercase; letter-spacing: 1.5px; color: #64748b; font-weight: 700; margin-bottom: 4px; }
-  .calepinage { margin: 18px 0; page-break-inside: avoid; }
-  .calepinage img { width: 100%; height: auto; display: block; border: 1px solid #e2e8f0; border-radius: 6px; }
-  .calepinage-caption { font-size: 7.5pt; color: #94a3b8; margin-top: 6px; text-align: center; letter-spacing: 0.5px; }
-  .calepinage-error { padding: 18px; background: #fef3c7; border: 1px solid #fde68a; border-radius: 6px; color: #92400e; font-size: 9pt; text-align: center; line-height: 1.5; }
-  .eligibility { display: flex; align-items: center; gap: 14px; background: #ecfdf5; border: 2px solid #10b981; border-radius: 8px; padding: 14px 18px; margin: 18px 0; page-break-inside: avoid; }
-  .eligibility-badge { width: 44px; height: 44px; border-radius: 50%; background: #10b981; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 22pt; font-weight: 800; flex-shrink: 0; }
-  .eligibility-text .label { font-size: 7pt; font-weight: 800; text-transform: uppercase; letter-spacing: 2px; color: #047857; margin-bottom: 2px; }
-  .eligibility-text .title { font-size: 14pt; font-weight: 800; color: #064e3b; line-height: 1.2; }
-  .eligibility-text .sub { font-size: 8.5pt; color: #047857; margin-top: 3px; }
-</style>
-</head>
-<body>
+  // === HTML BUILD ===
+  // Cleaner, more readable layout with strong visual hierarchy and explicit page breaks.
+  const css = `
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Helvetica', 'Arial', sans-serif; color: #0f172a; line-height: 1.5; font-size: 10pt; background: #fff; }
+    .pdf-doc { width: 180mm; margin: 0 auto; padding: 8mm 0; }
+    .pdf-page { padding: 0 4mm; }
+    .pdf-page-break { page-break-before: always; padding-top: 6mm; }
 
-<div class="header">
-  <div class="logo">
-    <div class="logo-icon">☀</div>
-    <div class="logo-text">
-      <h1>SOLAR SIM</h1>
-      <p>Études photovoltaïques</p>
-    </div>
-  </div>
-  <div class="ref-block">
-    <div class="label">Référence</div>
-    <div class="value">${ref}</div>
-    <div class="label">Date</div>
-    <div style="font-weight:600">${today}</div>
-  </div>
-</div>
+    /* Header */
+    .pdf-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 14px; border-bottom: 3px solid #0f172a; margin-bottom: 22px; }
+    .pdf-logo { display: flex; align-items: center; gap: 12px; }
+    .pdf-logo-icon { width: 50px; height: 50px; background: #0f172a; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #fbbf24; font-size: 28px; line-height: 1; }
+    .pdf-logo-text h1 { font-size: 18pt; font-weight: 800; letter-spacing: -0.5px; line-height: 1.1; color: #0f172a; }
+    .pdf-logo-text p { font-size: 8pt; color: #64748b; text-transform: uppercase; letter-spacing: 2.5px; font-weight: 700; margin-top: 2px; }
+    .pdf-ref { text-align: right; }
+    .pdf-ref .lbl { color: #94a3b8; text-transform: uppercase; letter-spacing: 1.5px; font-size: 7pt; font-weight: 700; }
+    .pdf-ref .val { font-weight: 800; font-size: 11pt; color: #0f172a; }
 
-<div class="title">Étude photovoltaïque</div>
-<div class="subtitle">Préconisation technique pour ${sim.client_name || 'le client'}</div>
+    /* Title */
+    .pdf-title { font-size: 26pt; font-weight: 800; letter-spacing: -1.2px; margin-bottom: 4px; color: #0f172a; line-height: 1; }
+    .pdf-subtitle { color: #64748b; font-size: 12pt; margin-bottom: 22px; font-weight: 500; }
 
-<div class="hero">
-  <div class="hero-grid">
-    <div class="hero-stat">
-      <div class="label">Puissance</div>
-      <div class="value">${finalKwc}<span class="unit">kWc</span></div>
-    </div>
-    <div class="hero-stat">
-      <div class="label">Panneaux</div>
-      <div class="value">${finalPanels}<span class="unit">×${sim.panel_power_w}W</span></div>
-    </div>
-  </div>
-  <div class="hero-bottom">
-    <div class="hero-mini">
-      <div class="label">Taux d'autoconsommation</div>
-      <div class="value accent">${calcs.selfConsumptionRate}%</div>
-    </div>
-    <div class="hero-mini">
-      <div class="label">Surface panneaux</div>
-      <div class="value">${surface} m²</div>
-    </div>
-  </div>
-</div>
+    /* Eligibility badge — top of document for max visibility */
+    .pdf-eligibility { display: flex; align-items: center; gap: 16px; background: #ecfdf5; border: 2px solid #10b981; border-radius: 10px; padding: 16px 20px; margin-bottom: 22px; }
+    .pdf-eligibility .badge { width: 52px; height: 52px; border-radius: 50%; background: #10b981; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 28pt; font-weight: 800; flex-shrink: 0; line-height: 1; }
+    .pdf-eligibility .lbl { font-size: 8pt; font-weight: 800; text-transform: uppercase; letter-spacing: 2px; color: #047857; margin-bottom: 3px; }
+    .pdf-eligibility .ttl { font-size: 16pt; font-weight: 800; color: #064e3b; line-height: 1.15; }
+    .pdf-eligibility .sub { font-size: 9pt; color: #047857; margin-top: 4px; line-height: 1.4; }
 
-<div class="eligibility">
-  <div class="eligibility-badge">✓</div>
-  <div class="eligibility-text">
-    <div class="label">Statut administratif</div>
-    <div class="title">Éligible à un montage de candidature</div>
-    <div class="sub">Cette installation répond aux critères techniques pour le dépôt d'un dossier d'aide ou de prime.</div>
-  </div>
-</div>
+    /* Hero — key numbers */
+    .pdf-hero { background: #0f172a; color: #fff; border-radius: 10px; padding: 22px 24px; margin-bottom: 22px; }
+    .pdf-hero-row { display: flex; gap: 14px; }
+    .pdf-hero-stat { flex: 1; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 16px; }
+    .pdf-hero-stat .lbl { font-size: 8pt; opacity: 0.65; text-transform: uppercase; letter-spacing: 2px; font-weight: 700; }
+    .pdf-hero-stat .val { font-size: 26pt; font-weight: 800; color: #fbbf24; line-height: 1.05; margin-top: 6px; }
+    .pdf-hero-stat .unit { font-size: 11pt; color: rgba(255,255,255,0.65); font-weight: 500; margin-left: 4px; }
+    .pdf-hero-foot { display: flex; gap: 16px; margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.12); }
+    .pdf-hero-foot > div { flex: 1; }
+    .pdf-hero-foot .lbl { opacity: 0.65; text-transform: uppercase; letter-spacing: 1.5px; font-size: 7pt; font-weight: 700; }
+    .pdf-hero-foot .val { font-weight: 800; font-size: 13pt; margin-top: 2px; }
+    .pdf-hero-foot .accent { color: #fbbf24; }
 
-<div class="grid-2">
-  <div class="section">
-    <div class="section-title">Client</div>
-    <div class="row"><span class="label">Nom</span><span class="value">${sim.client_name || '—'}</span></div>
-    <div class="row"><span class="label">Téléphone</span><span class="value">${sim.client_phone || '—'}</span></div>
-    <div class="row"><span class="label">Email</span><span class="value">${sim.client_email || '—'}</span></div>
-    <div class="row"><span class="label">Adresse</span><span class="value">${[sim.client_address, sim.client_postal_code, sim.client_city].filter(Boolean).join(', ') || '—'}</span></div>
-  </div>
+    /* Calepinage block */
+    .pdf-calepinage { margin-bottom: 22px; }
+    .pdf-section-title { font-size: 9pt; font-weight: 800; text-transform: uppercase; letter-spacing: 2.5px; color: #475569; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 2px solid #0f172a; }
+    .pdf-calepinage img { width: 100%; height: auto; display: block; border: 1px solid #cbd5e1; border-radius: 8px; }
+    .pdf-calepinage-cap { font-size: 8pt; color: #94a3b8; margin-top: 8px; text-align: center; letter-spacing: 0.4px; }
+    .pdf-calepinage-error { padding: 22px; background: #fef3c7; border: 1px solid #fde68a; border-radius: 8px; color: #92400e; font-size: 9.5pt; text-align: center; line-height: 1.5; }
 
-  <div class="section">
-    <div class="section-title">Bien immobilier</div>
-    <div class="row"><span class="label">Type</span><span class="value">${sim.housing_type || '—'}</span></div>
-    <div class="row"><span class="label">Surface</span><span class="value">${sim.surface_m2 ? sim.surface_m2 + ' m²' : '—'}</span></div>
-    <div class="row"><span class="label">Occupants</span><span class="value">${sim.occupants || '—'}</span></div>
-    <div class="row"><span class="label">Chauffage</span><span class="value">${sim.heating_type || '—'}</span></div>
-    <div class="row"><span class="label">Eau chaude</span><span class="value">${sim.hot_water_type || '—'}</span></div>
-  </div>
+    /* Detail sections grid */
+    .pdf-grid2 { display: flex; gap: 18px; margin-bottom: 18px; }
+    .pdf-grid2 > div { flex: 1; }
+    .pdf-section { margin-bottom: 14px; }
+    .pdf-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 9.5pt; border-bottom: 1px dotted #e2e8f0; }
+    .pdf-row:last-child { border-bottom: none; }
+    .pdf-row .lbl { color: #64748b; font-weight: 500; }
+    .pdf-row .val { font-weight: 700; text-align: right; color: #0f172a; }
 
-  <div class="section">
-    <div class="section-title">Toiture & ensoleillement</div>
-    <div class="row"><span class="label">Orientation</span><span class="value">${sim.roof_orientation || '—'}</span></div>
-    <div class="row"><span class="label">Inclinaison</span><span class="value">${sim.roof_inclination}°</span></div>
-    <div class="row"><span class="label">Région solaire</span><span class="value">${sim.region}</span></div>
-    <div class="row"><span class="label">Ensoleillement</span><span class="value">${REGIONS[sim.region]} kWh/kWc/an</span></div>
-  </div>
+    /* Equipment list */
+    .pdf-equip { display: flex; flex-wrap: wrap; gap: 6px; }
+    .pdf-equip > div { flex: 0 0 calc(33.33% - 4px); padding: 7px 9px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 8.5pt; display: flex; justify-content: space-between; align-items: center; }
+    .pdf-equip .name { font-weight: 600; }
+    .pdf-equip .kwh { color: #64748b; font-size: 7.5pt; font-weight: 700; }
 
-  <div class="section">
-    <div class="section-title">Installation préconisée</div>
-    <div class="row"><span class="label">Puissance</span><span class="value">${finalKwc} kWc</span></div>
-    <div class="row"><span class="label">Nombre de panneaux</span><span class="value">${finalPanels} × ${sim.panel_power_w}W</span></div>
-    <div class="row"><span class="label">Surface</span><span class="value">~${surface} m²</span></div>
-    <div class="row"><span class="label">Production annuelle</span><span class="value">${finalProd.toLocaleString('fr-FR')} kWh</span></div>
-    <div class="row"><span class="label">Conso annuelle</span><span class="value">${refConso.toLocaleString('fr-FR')} kWh</span></div>
-    <div class="row"><span class="label">Autoconsommation</span><span class="value">${calcs.selfConsumptionRate}%</span></div>
-  </div>
-</div>
+    /* Impact */
+    .pdf-impact { background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 10px; padding: 18px; margin-bottom: 18px; }
+    .pdf-impact h3 { color: #065f46; font-size: 11pt; margin-bottom: 12px; font-weight: 800; }
+    .pdf-impact-grid { display: flex; gap: 10px; }
+    .pdf-impact-grid > div { flex: 1; background: #fff; border: 1px solid #a7f3d0; border-radius: 8px; padding: 12px 8px; text-align: center; }
+    .pdf-impact-grid .val { font-size: 20pt; font-weight: 800; color: #047857; line-height: 1; }
+    .pdf-impact-grid .lbl { font-size: 7pt; color: #047857; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 800; margin-top: 6px; }
 
-${mapUrl ? `
-<div class="calepinage">
-  <div class="section-title">Calepinage du toit — vue satellite</div>
-  ${mapDataUrl
-    ? `<img src="${mapDataUrl}" alt="Calepinage du toit pour ${sim.client_name || 'le client'}" />
-       <div class="calepinage-caption">Imagerie satellite Google · Analyse Google Solar API${sim.roof_data?.imageryQuality ? ` · Qualité : ${sim.roof_data.imageryQuality}` : ''} · ${finalPanels} panneaux retenus</div>`
-    : `<div class="calepinage-error"><strong>Image satellite indisponible.</strong><br>${mapErrorMessage || 'Erreur de chargement.'}</div>`
-  }
-</div>
-` : ''}
+    /* Notes */
+    .pdf-notes { background: #f8fafc; border-left: 4px solid #0f172a; padding: 12px 16px; margin-bottom: 18px; font-size: 9.5pt; }
+    .pdf-notes .lbl { font-size: 7.5pt; text-transform: uppercase; letter-spacing: 1.5px; color: #64748b; font-weight: 700; margin-bottom: 4px; }
 
-${(sim.appliances || []).length > 0 ? `
-<div class="section">
-  <div class="section-title">Inventaire des équipements (${(sim.appliances || []).length})</div>
-  <div class="equip-grid">
-    ${(sim.appliances || []).map(a => `
-      <div class="equip">
-        <span class="name">${a.emoji || '⚡'} ${a.name}</span>
-        <span class="kwh">${Math.round((Number(a.kwh_year) || 0) * ((Number(a.days_per_week) || 7) / 7))} kWh</span>
-      </div>
-    `).join('')}
-  </div>
-</div>
-` : ''}
-
-${sim.notes ? `
-<div class="notes">
-  <div class="notes-title">Observations</div>
-  <div>${sim.notes.replace(/\n/g, '<br>')}</div>
-</div>
-` : ''}
-
-<div class="impact">
-  <h3>🌱 Impact environnemental — projection 25 ans</h3>
-  <div class="impact-grid">
-    <div class="impact-stat">
-      <div class="value">${calcs.co2Saved.toLocaleString('fr-FR')}</div>
-      <div class="label">kg CO₂ / an</div>
-    </div>
-    <div class="impact-stat">
-      <div class="value">${(calcs.co2Saved * 25 / 1000).toFixed(1)} t</div>
-      <div class="label">CO₂ évité 25 ans</div>
-    </div>
-    <div class="impact-stat">
-      <div class="value">${Math.round(calcs.co2Saved * 25 / 22)}</div>
-      <div class="label">arbres équivalents</div>
-    </div>
-  </div>
-</div>
-
-<div class="footer">
-  <strong>Étude établie par ${profile.full_name}</strong><br>
-  Document à valeur indicative · Établi le ${today} · Référence ${ref}<br>
-  Solar Sim — Outil professionnel d'étude photovoltaïque
-</div>
-
-</body>
-</html>
+    /* Footer */
+    .pdf-footer { margin-top: 24px; padding-top: 14px; border-top: 2px solid #e2e8f0; text-align: center; font-size: 8pt; color: #94a3b8; line-height: 1.7; }
+    .pdf-footer strong { color: #475569; font-weight: 700; }
   `;
 
-  // Replace the loading screen with the actual report content
-  if (win.closed) return; // user already closed the loading window — bail
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
-  // The image is already inlined as a data URL, so no async loading needed.
-  // Small delay lets the browser finish layout before opening the print dialog.
-  setTimeout(() => { try { win.focus(); win.print(); } catch {} }, 350);
+  const html = `
+<style>${css}</style>
+<div class="pdf-doc">
+  <div class="pdf-page">
+
+    <div class="pdf-header">
+      <div class="pdf-logo">
+        <div class="pdf-logo-icon">☀</div>
+        <div class="pdf-logo-text">
+          <h1>SOLAR SIM</h1>
+          <p>Études photovoltaïques</p>
+        </div>
+      </div>
+      <div class="pdf-ref">
+        <div class="lbl">Référence</div>
+        <div class="val">${ref}</div>
+        <div class="lbl" style="margin-top:6px">Date d'édition</div>
+        <div class="val" style="font-size:10pt">${today}</div>
+      </div>
+    </div>
+
+    <div class="pdf-title">Étude photovoltaïque</div>
+    <div class="pdf-subtitle">Préconisation technique pour <strong style="color:#0f172a">${sim.client_name || 'le client'}</strong></div>
+
+    <div class="pdf-eligibility">
+      <div class="badge">✓</div>
+      <div>
+        <div class="lbl">Statut administratif</div>
+        <div class="ttl">Éligible à un montage de candidature</div>
+        <div class="sub">Cette installation répond aux critères techniques pour le dépôt d'un dossier d'aide ou de prime.</div>
+      </div>
+    </div>
+
+    <div class="pdf-hero">
+      <div class="pdf-hero-row">
+        <div class="pdf-hero-stat">
+          <div class="lbl">Puissance</div>
+          <div class="val">${finalKwc}<span class="unit">kWc</span></div>
+        </div>
+        <div class="pdf-hero-stat">
+          <div class="lbl">Panneaux</div>
+          <div class="val">${finalPanels}<span class="unit">×${sim.panel_power_w}W</span></div>
+        </div>
+        <div class="pdf-hero-stat">
+          <div class="lbl">Production / an</div>
+          <div class="val">${finalProd.toLocaleString('fr-FR')}<span class="unit">kWh</span></div>
+        </div>
+      </div>
+      <div class="pdf-hero-foot">
+        <div>
+          <div class="lbl">Autoconsommation</div>
+          <div class="val accent">${calcs.selfConsumptionRate}%</div>
+        </div>
+        <div>
+          <div class="lbl">Surface panneaux</div>
+          <div class="val">~${surface} m²</div>
+        </div>
+        <div>
+          <div class="lbl">Conso de référence</div>
+          <div class="val">${refConso.toLocaleString('fr-FR')} kWh</div>
+        </div>
+      </div>
+    </div>
+
+    ${mapUrl ? `
+    <div class="pdf-calepinage">
+      <div class="pdf-section-title">Calepinage du toit — vue satellite</div>
+      ${mapDataUrl
+        ? `<img src="${mapDataUrl}" alt="Calepinage du toit" />
+           <div class="pdf-calepinage-cap">Imagerie satellite Google · Analyse Google Solar API${sim.roof_data?.imageryQuality ? ` · Qualité : ${sim.roof_data.imageryQuality}` : ''} · ${finalPanels} panneaux retenus</div>`
+        : `<div class="pdf-calepinage-error"><strong>Image satellite indisponible.</strong><br>${mapErrorMessage || 'Erreur de chargement.'}</div>`
+      }
+    </div>
+    ` : ''}
+
+  </div>
+
+  <div class="pdf-page pdf-page-break">
+
+    <div class="pdf-grid2">
+      <div>
+        <div class="pdf-section">
+          <div class="pdf-section-title">Client</div>
+          <div class="pdf-row"><span class="lbl">Nom</span><span class="val">${sim.client_name || '—'}</span></div>
+          <div class="pdf-row"><span class="lbl">Téléphone</span><span class="val">${sim.client_phone || '—'}</span></div>
+          <div class="pdf-row"><span class="lbl">Email</span><span class="val">${sim.client_email || '—'}</span></div>
+          <div class="pdf-row"><span class="lbl">Adresse</span><span class="val">${[sim.client_address, sim.client_postal_code, sim.client_city].filter(Boolean).join(', ') || '—'}</span></div>
+        </div>
+
+        <div class="pdf-section">
+          <div class="pdf-section-title">Bien immobilier</div>
+          <div class="pdf-row"><span class="lbl">Type</span><span class="val">${sim.housing_type || '—'}</span></div>
+          <div class="pdf-row"><span class="lbl">Surface</span><span class="val">${sim.surface_m2 ? sim.surface_m2 + ' m²' : '—'}</span></div>
+          <div class="pdf-row"><span class="lbl">Occupants</span><span class="val">${sim.occupants || '—'}</span></div>
+          <div class="pdf-row"><span class="lbl">Chauffage</span><span class="val">${sim.heating_type || '—'}</span></div>
+          <div class="pdf-row"><span class="lbl">Eau chaude</span><span class="val">${sim.hot_water_type || '—'}</span></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="pdf-section">
+          <div class="pdf-section-title">Toiture & ensoleillement</div>
+          <div class="pdf-row"><span class="lbl">Orientation</span><span class="val">${sim.roof_orientation || '—'}</span></div>
+          <div class="pdf-row"><span class="lbl">Inclinaison</span><span class="val">${sim.roof_inclination}°</span></div>
+          <div class="pdf-row"><span class="lbl">Région solaire</span><span class="val">${sim.region}</span></div>
+          <div class="pdf-row"><span class="lbl">Ensoleillement</span><span class="val">${REGIONS[sim.region]} kWh/kWc/an</span></div>
+        </div>
+
+        <div class="pdf-section">
+          <div class="pdf-section-title">Installation préconisée</div>
+          <div class="pdf-row"><span class="lbl">Puissance</span><span class="val">${finalKwc} kWc</span></div>
+          <div class="pdf-row"><span class="lbl">Panneaux</span><span class="val">${finalPanels} × ${sim.panel_power_w}W</span></div>
+          <div class="pdf-row"><span class="lbl">Surface au sol</span><span class="val">~${surface} m²</span></div>
+          <div class="pdf-row"><span class="lbl">Production / an</span><span class="val">${finalProd.toLocaleString('fr-FR')} kWh</span></div>
+          <div class="pdf-row"><span class="lbl">Autoconsommation</span><span class="val">${calcs.selfConsumptionRate}%</span></div>
+        </div>
+      </div>
+    </div>
+
+    ${(sim.appliances || []).length > 0 ? `
+    <div class="pdf-section">
+      <div class="pdf-section-title">Inventaire des équipements (${(sim.appliances || []).length})</div>
+      <div class="pdf-equip">
+        ${(sim.appliances || []).map(a => `
+          <div>
+            <span class="name">${a.emoji || ''} ${a.name}</span>
+            <span class="kwh">${Math.round((Number(a.kwh_year) || 0) * ((Number(a.days_per_week) || 7) / 7))} kWh</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+    ` : ''}
+
+    ${sim.notes ? `
+    <div class="pdf-notes">
+      <div class="lbl">Observations</div>
+      <div>${sim.notes.replace(/\n/g, '<br>')}</div>
+    </div>
+    ` : ''}
+
+    <div class="pdf-impact">
+      <h3>Impact environnemental — projection sur 25 ans</h3>
+      <div class="pdf-impact-grid">
+        <div>
+          <div class="val">${calcs.co2Saved.toLocaleString('fr-FR')}</div>
+          <div class="lbl">kg CO₂ / an</div>
+        </div>
+        <div>
+          <div class="val">${(calcs.co2Saved * 25 / 1000).toFixed(1)} t</div>
+          <div class="lbl">CO₂ évité 25 ans</div>
+        </div>
+        <div>
+          <div class="val">${Math.round(calcs.co2Saved * 25 / 22)}</div>
+          <div class="lbl">arbres équivalents</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pdf-footer">
+      <strong>Étude établie par ${profile.full_name}</strong><br>
+      Document à valeur indicative · Établi le ${today} · Référence ${ref}<br>
+      Solar Sim — Outil professionnel d'étude photovoltaïque
+    </div>
+
+  </div>
+</div>
+  `;
+
+  // === RENDER & DOWNLOAD ===
+  // Mount the HTML in a hidden, off-screen container so html2canvas can rasterize it.
+  // Using position:fixed + opacity:0 keeps it from disturbing the visible UI.
+  const container = document.createElement('div');
+  container.style.cssText = 'position:fixed;left:-10000px;top:0;width:200mm;background:#fff;z-index:-1;';
+  container.innerHTML = html;
+  document.body.appendChild(container);
+
+  try {
+    const html2pdf = await loadHtml2pdf();
+    await html2pdf().set({
+      margin: [10, 10, 10, 10],
+      filename,
+      image: { type: 'jpeg', quality: 0.95 },
+      html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait', compress: true },
+      pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
+    }).from(container).save();
+  } catch (e) {
+    console.error('PDF generation failed:', e);
+    if (opts.onError) opts.onError(e);
+    else alert('Erreur lors de la génération du PDF. Vérifiez la console.');
+  } finally {
+    if (container.parentNode) container.parentNode.removeChild(container);
+  }
 }
 
 // ============ UI COMPONENTS ============
