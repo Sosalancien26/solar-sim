@@ -1968,252 +1968,246 @@ async function generatePDF(sim, calcs, profile, opts = {}) {
   }
 
   // === HTML BUILD ===
-  // All rules are scoped to .pdf-doc so they survive being injected as <style> in <head>
-  // and don't leak to the host page. We avoid "body" selectors entirely because the report
-  // is rendered into a <div>, not a <body>.
+  // Tightened spacing throughout: less padding, smaller margins. Calepinage image
+  // moved to the very end of the document (right before the footer) so the technical
+  // pages remain dense and information-rich.
   const css = `
     .pdf-doc, .pdf-doc * { margin: 0; padding: 0; box-sizing: border-box; }
-    .pdf-doc { font-family: 'Helvetica', 'Arial', sans-serif; color: #0f172a; line-height: 1.5; font-size: 10pt; background: #fff; width: 720px; padding: 28px 24px; }
-    .pdf-page { padding: 0; }
-    .pdf-page-break { page-break-before: always; padding-top: 18px; }
+    .pdf-doc { font-family: 'Helvetica', 'Arial', sans-serif; color: #0f172a; line-height: 1.4; font-size: 9.5pt; background: #fff; width: 720px; padding: 18px 22px; }
 
     /* Header */
-    .pdf-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 14px; border-bottom: 3px solid #0f172a; margin-bottom: 22px; }
-    .pdf-logo { display: flex; align-items: center; gap: 12px; }
-    .pdf-logo-icon { width: 50px; height: 50px; background: #0f172a; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #fbbf24; font-size: 28px; line-height: 1; }
-    .pdf-logo-text h1 { font-size: 18pt; font-weight: 800; letter-spacing: -0.5px; line-height: 1.1; color: #0f172a; }
-    .pdf-logo-text p { font-size: 8pt; color: #64748b; text-transform: uppercase; letter-spacing: 2.5px; font-weight: 700; margin-top: 2px; }
+    .pdf-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 10px; border-bottom: 2.5px solid #0f172a; margin-bottom: 14px; }
+    .pdf-logo { display: flex; align-items: center; gap: 10px; }
+    .pdf-logo-icon { width: 44px; height: 44px; background: #0f172a; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #fbbf24; font-size: 24px; line-height: 1; }
+    .pdf-logo-text h1 { font-size: 16pt; font-weight: 800; letter-spacing: -0.5px; line-height: 1.1; color: #0f172a; }
+    .pdf-logo-text p { font-size: 7.5pt; color: #64748b; text-transform: uppercase; letter-spacing: 2.5px; font-weight: 700; margin-top: 2px; }
     .pdf-ref { text-align: right; }
     .pdf-ref .lbl { color: #94a3b8; text-transform: uppercase; letter-spacing: 1.5px; font-size: 7pt; font-weight: 700; }
-    .pdf-ref .val { font-weight: 800; font-size: 11pt; color: #0f172a; }
+    .pdf-ref .val { font-weight: 800; font-size: 10.5pt; color: #0f172a; }
 
     /* Title */
-    .pdf-title { font-size: 26pt; font-weight: 800; letter-spacing: -1.2px; margin-bottom: 4px; color: #0f172a; line-height: 1; }
-    .pdf-subtitle { color: #64748b; font-size: 12pt; margin-bottom: 22px; font-weight: 500; }
+    .pdf-title { font-size: 22pt; font-weight: 800; letter-spacing: -1px; margin-bottom: 2px; color: #0f172a; line-height: 1; }
+    .pdf-subtitle { color: #64748b; font-size: 11pt; margin-bottom: 12px; font-weight: 500; }
 
-    /* Eligibility badge — top of document for max visibility */
-    .pdf-eligibility { display: flex; align-items: center; gap: 16px; background: #ecfdf5; border: 2px solid #10b981; border-radius: 10px; padding: 16px 20px; margin-bottom: 22px; }
-    .pdf-eligibility .badge { width: 52px; height: 52px; border-radius: 50%; background: #10b981; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 28pt; font-weight: 800; flex-shrink: 0; line-height: 1; }
-    .pdf-eligibility .lbl { font-size: 8pt; font-weight: 800; text-transform: uppercase; letter-spacing: 2px; color: #047857; margin-bottom: 3px; }
-    .pdf-eligibility .ttl { font-size: 16pt; font-weight: 800; color: #064e3b; line-height: 1.15; }
-    .pdf-eligibility .sub { font-size: 9pt; color: #047857; margin-top: 4px; line-height: 1.4; }
+    /* Eligibility badge */
+    .pdf-eligibility { display: flex; align-items: center; gap: 12px; background: #ecfdf5; border: 2px solid #10b981; border-radius: 8px; padding: 11px 14px; margin-bottom: 12px; page-break-inside: avoid; }
+    .pdf-eligibility .badge { width: 42px; height: 42px; border-radius: 50%; background: #10b981; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 22pt; font-weight: 800; flex-shrink: 0; line-height: 1; }
+    .pdf-eligibility .lbl { font-size: 7.5pt; font-weight: 800; text-transform: uppercase; letter-spacing: 1.8px; color: #047857; margin-bottom: 2px; }
+    .pdf-eligibility .ttl { font-size: 14pt; font-weight: 800; color: #064e3b; line-height: 1.15; }
+    .pdf-eligibility .sub { font-size: 8.5pt; color: #047857; margin-top: 2px; line-height: 1.35; }
 
     /* Hero — key numbers */
-    .pdf-hero { background: #0f172a; color: #fff; border-radius: 10px; padding: 22px 24px; margin-bottom: 22px; }
-    .pdf-hero-row { display: flex; gap: 14px; }
-    .pdf-hero-stat { flex: 1; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 16px; }
-    .pdf-hero-stat .lbl { font-size: 8pt; opacity: 0.65; text-transform: uppercase; letter-spacing: 2px; font-weight: 700; }
-    .pdf-hero-stat .val { font-size: 26pt; font-weight: 800; color: #fbbf24; line-height: 1.05; margin-top: 6px; }
-    .pdf-hero-stat .unit { font-size: 11pt; color: rgba(255,255,255,0.65); font-weight: 500; margin-left: 4px; }
-    .pdf-hero-foot { display: flex; gap: 16px; margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.12); }
+    .pdf-hero { background: #0f172a; color: #fff; border-radius: 8px; padding: 14px 16px; margin-bottom: 12px; page-break-inside: avoid; }
+    .pdf-hero-row { display: flex; gap: 10px; }
+    .pdf-hero-stat { flex: 1; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; padding: 10px 12px; }
+    .pdf-hero-stat .lbl { font-size: 7.5pt; opacity: 0.65; text-transform: uppercase; letter-spacing: 2px; font-weight: 700; }
+    .pdf-hero-stat .val { font-size: 22pt; font-weight: 800; color: #fbbf24; line-height: 1.05; margin-top: 4px; }
+    .pdf-hero-stat .unit { font-size: 10pt; color: rgba(255,255,255,0.65); font-weight: 500; margin-left: 4px; }
+    .pdf-hero-foot { display: flex; gap: 12px; margin-top: 10px; padding-top: 9px; border-top: 1px solid rgba(255,255,255,0.12); }
     .pdf-hero-foot > div { flex: 1; }
-    .pdf-hero-foot .lbl { opacity: 0.65; text-transform: uppercase; letter-spacing: 1.5px; font-size: 7pt; font-weight: 700; }
-    .pdf-hero-foot .val { font-weight: 800; font-size: 13pt; margin-top: 2px; }
+    .pdf-hero-foot .lbl { opacity: 0.65; text-transform: uppercase; letter-spacing: 1.5px; font-size: 6.5pt; font-weight: 700; }
+    .pdf-hero-foot .val { font-weight: 800; font-size: 11.5pt; margin-top: 1px; }
     .pdf-hero-foot .accent { color: #fbbf24; }
 
-    /* Calepinage block */
-    .pdf-calepinage { margin-bottom: 22px; }
-    .pdf-section-title { font-size: 9pt; font-weight: 800; text-transform: uppercase; letter-spacing: 2.5px; color: #475569; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 2px solid #0f172a; }
-    .pdf-calepinage img { width: 100%; height: auto; display: block; border: 1px solid #cbd5e1; border-radius: 8px; }
-    .pdf-calepinage-cap { font-size: 8pt; color: #94a3b8; margin-top: 8px; text-align: center; letter-spacing: 0.4px; }
-    .pdf-calepinage-error { padding: 22px; background: #fef3c7; border: 1px solid #fde68a; border-radius: 8px; color: #92400e; font-size: 9.5pt; text-align: center; line-height: 1.5; }
+    /* Section header (before each block) */
+    .pdf-section-title { font-size: 8.5pt; font-weight: 800; text-transform: uppercase; letter-spacing: 2.5px; color: #475569; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1.5px solid #0f172a; }
 
     /* Detail sections grid */
-    .pdf-grid2 { display: flex; gap: 18px; margin-bottom: 18px; }
+    .pdf-grid2 { display: flex; gap: 14px; margin-bottom: 10px; }
     .pdf-grid2 > div { flex: 1; }
-    .pdf-section { margin-bottom: 14px; }
-    .pdf-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 9.5pt; border-bottom: 1px dotted #e2e8f0; }
+    .pdf-section { margin-bottom: 10px; page-break-inside: avoid; }
+    .pdf-row { display: flex; justify-content: space-between; padding: 3.5px 0; font-size: 9pt; border-bottom: 1px dotted #e2e8f0; }
     .pdf-row:last-child { border-bottom: none; }
     .pdf-row .lbl { color: #64748b; font-weight: 500; }
     .pdf-row .val { font-weight: 700; text-align: right; color: #0f172a; }
 
     /* Equipment list */
-    .pdf-equip { display: flex; flex-wrap: wrap; gap: 6px; }
-    .pdf-equip > div { flex: 0 0 calc(33.33% - 4px); padding: 7px 9px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 8.5pt; display: flex; justify-content: space-between; align-items: center; }
+    .pdf-equip { display: flex; flex-wrap: wrap; gap: 5px; }
+    .pdf-equip > div { flex: 0 0 calc(33.33% - 4px); padding: 5px 8px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 5px; font-size: 8pt; display: flex; justify-content: space-between; align-items: center; }
     .pdf-equip .name { font-weight: 600; }
-    .pdf-equip .kwh { color: #64748b; font-size: 7.5pt; font-weight: 700; }
+    .pdf-equip .kwh { color: #64748b; font-size: 7pt; font-weight: 700; }
 
     /* Impact */
-    .pdf-impact { background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 10px; padding: 18px; margin-bottom: 18px; }
-    .pdf-impact h3 { color: #065f46; font-size: 11pt; margin-bottom: 12px; font-weight: 800; }
-    .pdf-impact-grid { display: flex; gap: 10px; }
-    .pdf-impact-grid > div { flex: 1; background: #fff; border: 1px solid #a7f3d0; border-radius: 8px; padding: 12px 8px; text-align: center; }
-    .pdf-impact-grid .val { font-size: 20pt; font-weight: 800; color: #047857; line-height: 1; }
-    .pdf-impact-grid .lbl { font-size: 7pt; color: #047857; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 800; margin-top: 6px; }
+    .pdf-impact { background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; page-break-inside: avoid; }
+    .pdf-impact h3 { color: #065f46; font-size: 10pt; margin-bottom: 8px; font-weight: 800; }
+    .pdf-impact-grid { display: flex; gap: 8px; }
+    .pdf-impact-grid > div { flex: 1; background: #fff; border: 1px solid #a7f3d0; border-radius: 6px; padding: 9px 6px; text-align: center; }
+    .pdf-impact-grid .val { font-size: 17pt; font-weight: 800; color: #047857; line-height: 1; }
+    .pdf-impact-grid .lbl { font-size: 6.5pt; color: #047857; text-transform: uppercase; letter-spacing: 1.4px; font-weight: 800; margin-top: 4px; }
 
     /* Notes */
-    .pdf-notes { background: #f8fafc; border-left: 4px solid #0f172a; padding: 12px 16px; margin-bottom: 18px; font-size: 9.5pt; }
-    .pdf-notes .lbl { font-size: 7.5pt; text-transform: uppercase; letter-spacing: 1.5px; color: #64748b; font-weight: 700; margin-bottom: 4px; }
+    .pdf-notes { background: #f8fafc; border-left: 3px solid #0f172a; padding: 8px 12px; margin-bottom: 12px; font-size: 9pt; page-break-inside: avoid; }
+    .pdf-notes .lbl { font-size: 7pt; text-transform: uppercase; letter-spacing: 1.5px; color: #64748b; font-weight: 700; margin-bottom: 3px; }
+
+    /* Calepinage block — moved to end of document */
+    .pdf-calepinage { margin-bottom: 12px; page-break-inside: avoid; page-break-before: auto; }
+    .pdf-calepinage img { width: 100%; height: auto; display: block; border: 1px solid #cbd5e1; border-radius: 6px; }
+    .pdf-calepinage-cap { font-size: 7.5pt; color: #94a3b8; margin-top: 5px; text-align: center; letter-spacing: 0.4px; }
+    .pdf-calepinage-error { padding: 14px; background: #fef3c7; border: 1px solid #fde68a; border-radius: 6px; color: #92400e; font-size: 9pt; text-align: center; line-height: 1.4; }
 
     /* Footer */
-    .pdf-footer { margin-top: 24px; padding-top: 14px; border-top: 2px solid #e2e8f0; text-align: center; font-size: 8pt; color: #94a3b8; line-height: 1.7; }
+    .pdf-footer { margin-top: 14px; padding-top: 10px; border-top: 1.5px solid #e2e8f0; text-align: center; font-size: 7.5pt; color: #94a3b8; line-height: 1.6; }
     .pdf-footer strong { color: #475569; font-weight: 700; }
   `;
 
   const html = `
 <div class="pdf-doc">
-  <div class="pdf-page">
 
-    <div class="pdf-header">
-      <div class="pdf-logo">
-        <div class="pdf-logo-icon">☀</div>
-        <div class="pdf-logo-text">
-          <h1>SOLAR SIM</h1>
-          <p>Études photovoltaïques</p>
-        </div>
-      </div>
-      <div class="pdf-ref">
-        <div class="lbl">Référence</div>
-        <div class="val">${ref}</div>
-        <div class="lbl" style="margin-top:6px">Date d'édition</div>
-        <div class="val" style="font-size:10pt">${today}</div>
+  <div class="pdf-header">
+    <div class="pdf-logo">
+      <div class="pdf-logo-icon">☀</div>
+      <div class="pdf-logo-text">
+        <h1>SOLAR SIM</h1>
+        <p>Études photovoltaïques</p>
       </div>
     </div>
-
-    <div class="pdf-title">Étude photovoltaïque</div>
-    <div class="pdf-subtitle">Préconisation technique pour <strong style="color:#0f172a">${sim.client_name || 'le client'}</strong></div>
-
-    <div class="pdf-eligibility">
-      <div class="badge">✓</div>
-      <div>
-        <div class="lbl">Statut administratif</div>
-        <div class="ttl">Éligible à la constitution d'un dossier d'études</div>
-        <div class="sub">Cette installation répond aux critères techniques pour la constitution d'un dossier d'études complet.</div>
-      </div>
+    <div class="pdf-ref">
+      <div class="lbl">Référence</div>
+      <div class="val">${ref}</div>
+      <div class="lbl" style="margin-top:5px">Date d'édition</div>
+      <div class="val" style="font-size:9.5pt">${today}</div>
     </div>
-
-    <div class="pdf-hero">
-      <div class="pdf-hero-row">
-        <div class="pdf-hero-stat">
-          <div class="lbl">Puissance</div>
-          <div class="val">${finalKwc}<span class="unit">kWc</span></div>
-        </div>
-        <div class="pdf-hero-stat">
-          <div class="lbl">Panneaux</div>
-          <div class="val">${finalPanels}<span class="unit">×${sim.panel_power_w}W</span></div>
-        </div>
-        <div class="pdf-hero-stat">
-          <div class="lbl">Production / an</div>
-          <div class="val">${finalProd.toLocaleString('fr-FR')}<span class="unit">kWh</span></div>
-        </div>
-      </div>
-      <div class="pdf-hero-foot">
-        <div>
-          <div class="lbl">Autoconsommation</div>
-          <div class="val accent">${calcs.selfConsumptionRate}%</div>
-        </div>
-        <div>
-          <div class="lbl">Surface panneaux</div>
-          <div class="val">~${surface} m²</div>
-        </div>
-        <div>
-          <div class="lbl">Conso de référence</div>
-          <div class="val">${refConso.toLocaleString('fr-FR')} kWh</div>
-        </div>
-      </div>
-    </div>
-
-    ${mapUrl ? `
-    <div class="pdf-calepinage">
-      <div class="pdf-section-title">Calepinage du toit — vue satellite</div>
-      ${mapDataUrl
-        ? `<img src="${mapDataUrl}" alt="Calepinage du toit" />
-           <div class="pdf-calepinage-cap">Imagerie satellite Google · Analyse Google Solar API${sim.roof_data?.imageryQuality ? ` · Qualité : ${sim.roof_data.imageryQuality}` : ''} · ${finalPanels} panneaux retenus</div>`
-        : `<div class="pdf-calepinage-error"><strong>Image satellite indisponible.</strong><br>${mapErrorMessage || 'Erreur de chargement.'}</div>`
-      }
-    </div>
-    ` : ''}
-
   </div>
 
-  <div class="pdf-page pdf-page-break">
+  <div class="pdf-title">Étude photovoltaïque</div>
+  <div class="pdf-subtitle">Préconisation technique pour <strong style="color:#0f172a">${sim.client_name || 'le client'}</strong></div>
 
-    <div class="pdf-grid2">
-      <div>
-        <div class="pdf-section">
-          <div class="pdf-section-title">Client</div>
-          <div class="pdf-row"><span class="lbl">Nom</span><span class="val">${sim.client_name || '—'}</span></div>
-          <div class="pdf-row"><span class="lbl">Téléphone</span><span class="val">${sim.client_phone || '—'}</span></div>
-          <div class="pdf-row"><span class="lbl">Email</span><span class="val">${sim.client_email || '—'}</span></div>
-          <div class="pdf-row"><span class="lbl">Adresse</span><span class="val">${[sim.client_address, sim.client_postal_code, sim.client_city].filter(Boolean).join(', ') || '—'}</span></div>
-        </div>
-
-        <div class="pdf-section">
-          <div class="pdf-section-title">Bien immobilier</div>
-          <div class="pdf-row"><span class="lbl">Type</span><span class="val">${sim.housing_type || '—'}</span></div>
-          <div class="pdf-row"><span class="lbl">Surface</span><span class="val">${sim.surface_m2 ? sim.surface_m2 + ' m²' : '—'}</span></div>
-          <div class="pdf-row"><span class="lbl">Occupants</span><span class="val">${sim.occupants || '—'}</span></div>
-          <div class="pdf-row"><span class="lbl">Chauffage</span><span class="val">${sim.heating_type || '—'}</span></div>
-          <div class="pdf-row"><span class="lbl">Eau chaude</span><span class="val">${sim.hot_water_type || '—'}</span></div>
-        </div>
-      </div>
-
-      <div>
-        <div class="pdf-section">
-          <div class="pdf-section-title">Toiture & ensoleillement</div>
-          <div class="pdf-row"><span class="lbl">Orientation</span><span class="val">${sim.roof_orientation || '—'}</span></div>
-          <div class="pdf-row"><span class="lbl">Inclinaison</span><span class="val">${sim.roof_inclination}°</span></div>
-          <div class="pdf-row"><span class="lbl">Région solaire</span><span class="val">${sim.region}</span></div>
-          <div class="pdf-row"><span class="lbl">Ensoleillement</span><span class="val">${REGIONS[sim.region]} kWh/kWc/an</span></div>
-        </div>
-
-        <div class="pdf-section">
-          <div class="pdf-section-title">Installation préconisée</div>
-          <div class="pdf-row"><span class="lbl">Puissance</span><span class="val">${finalKwc} kWc</span></div>
-          <div class="pdf-row"><span class="lbl">Panneaux</span><span class="val">${finalPanels} × ${sim.panel_power_w}W</span></div>
-          <div class="pdf-row"><span class="lbl">Surface au sol</span><span class="val">~${surface} m²</span></div>
-          <div class="pdf-row"><span class="lbl">Production / an</span><span class="val">${finalProd.toLocaleString('fr-FR')} kWh</span></div>
-          <div class="pdf-row"><span class="lbl">Autoconsommation</span><span class="val">${calcs.selfConsumptionRate}%</span></div>
-        </div>
-      </div>
+  <div class="pdf-eligibility">
+    <div class="badge">✓</div>
+    <div>
+      <div class="lbl">Statut administratif</div>
+      <div class="ttl">Éligible à la constitution d'un dossier d'études</div>
+      <div class="sub">Cette installation répond aux critères techniques pour la constitution d'un dossier d'études complet.</div>
     </div>
-
-    ${(sim.appliances || []).length > 0 ? `
-    <div class="pdf-section">
-      <div class="pdf-section-title">Inventaire des équipements (${(sim.appliances || []).length})</div>
-      <div class="pdf-equip">
-        ${(sim.appliances || []).map(a => `
-          <div>
-            <span class="name">${a.emoji || ''} ${a.name}</span>
-            <span class="kwh">${Math.round((Number(a.kwh_year) || 0) * ((Number(a.days_per_week) || 7) / 7))} kWh</span>
-          </div>
-        `).join('')}
-      </div>
-    </div>
-    ` : ''}
-
-    ${sim.notes ? `
-    <div class="pdf-notes">
-      <div class="lbl">Observations</div>
-      <div>${sim.notes.replace(/\n/g, '<br>')}</div>
-    </div>
-    ` : ''}
-
-    <div class="pdf-impact">
-      <h3>Impact environnemental — projection sur 25 ans</h3>
-      <div class="pdf-impact-grid">
-        <div>
-          <div class="val">${calcs.co2Saved.toLocaleString('fr-FR')}</div>
-          <div class="lbl">kg CO₂ / an</div>
-        </div>
-        <div>
-          <div class="val">${(calcs.co2Saved * 25 / 1000).toFixed(1)} t</div>
-          <div class="lbl">CO₂ évité 25 ans</div>
-        </div>
-        <div>
-          <div class="val">${Math.round(calcs.co2Saved * 25 / 22)}</div>
-          <div class="lbl">arbres équivalents</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="pdf-footer">
-      <strong>Étude établie par ${profile.full_name}</strong><br>
-      Document à valeur indicative · Établi le ${today} · Référence ${ref}<br>
-      Solar Sim — Outil professionnel d'étude photovoltaïque
-    </div>
-
   </div>
+
+  <div class="pdf-hero">
+    <div class="pdf-hero-row">
+      <div class="pdf-hero-stat">
+        <div class="lbl">Puissance</div>
+        <div class="val">${finalKwc}<span class="unit">kWc</span></div>
+      </div>
+      <div class="pdf-hero-stat">
+        <div class="lbl">Panneaux</div>
+        <div class="val">${finalPanels}<span class="unit">×${sim.panel_power_w}W</span></div>
+      </div>
+      <div class="pdf-hero-stat">
+        <div class="lbl">Production / an</div>
+        <div class="val">${finalProd.toLocaleString('fr-FR')}<span class="unit">kWh</span></div>
+      </div>
+    </div>
+    <div class="pdf-hero-foot">
+      <div>
+        <div class="lbl">Autoconsommation</div>
+        <div class="val accent">${calcs.selfConsumptionRate}%</div>
+      </div>
+      <div>
+        <div class="lbl">Surface panneaux</div>
+        <div class="val">~${surface} m²</div>
+      </div>
+      <div>
+        <div class="lbl">Conso de référence</div>
+        <div class="val">${refConso.toLocaleString('fr-FR')} kWh</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="pdf-grid2">
+    <div>
+      <div class="pdf-section">
+        <div class="pdf-section-title">Client</div>
+        <div class="pdf-row"><span class="lbl">Nom</span><span class="val">${sim.client_name || '—'}</span></div>
+        <div class="pdf-row"><span class="lbl">Téléphone</span><span class="val">${sim.client_phone || '—'}</span></div>
+        <div class="pdf-row"><span class="lbl">Email</span><span class="val">${sim.client_email || '—'}</span></div>
+        <div class="pdf-row"><span class="lbl">Adresse</span><span class="val">${[sim.client_address, sim.client_postal_code, sim.client_city].filter(Boolean).join(', ') || '—'}</span></div>
+      </div>
+
+      <div class="pdf-section">
+        <div class="pdf-section-title">Bien immobilier</div>
+        <div class="pdf-row"><span class="lbl">Type</span><span class="val">${sim.housing_type || '—'}</span></div>
+        <div class="pdf-row"><span class="lbl">Surface</span><span class="val">${sim.surface_m2 ? sim.surface_m2 + ' m²' : '—'}</span></div>
+        <div class="pdf-row"><span class="lbl">Occupants</span><span class="val">${sim.occupants || '—'}</span></div>
+        <div class="pdf-row"><span class="lbl">Chauffage</span><span class="val">${sim.heating_type || '—'}</span></div>
+        <div class="pdf-row"><span class="lbl">Eau chaude</span><span class="val">${sim.hot_water_type || '—'}</span></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="pdf-section">
+        <div class="pdf-section-title">Toiture & ensoleillement</div>
+        <div class="pdf-row"><span class="lbl">Orientation</span><span class="val">${sim.roof_orientation || '—'}</span></div>
+        <div class="pdf-row"><span class="lbl">Inclinaison</span><span class="val">${sim.roof_inclination}°</span></div>
+        <div class="pdf-row"><span class="lbl">Région solaire</span><span class="val">${sim.region}</span></div>
+        <div class="pdf-row"><span class="lbl">Ensoleillement</span><span class="val">${REGIONS[sim.region]} kWh/kWc/an</span></div>
+      </div>
+
+      <div class="pdf-section">
+        <div class="pdf-section-title">Installation préconisée</div>
+        <div class="pdf-row"><span class="lbl">Puissance</span><span class="val">${finalKwc} kWc</span></div>
+        <div class="pdf-row"><span class="lbl">Panneaux</span><span class="val">${finalPanels} × ${sim.panel_power_w}W</span></div>
+        <div class="pdf-row"><span class="lbl">Surface au sol</span><span class="val">~${surface} m²</span></div>
+        <div class="pdf-row"><span class="lbl">Production / an</span><span class="val">${finalProd.toLocaleString('fr-FR')} kWh</span></div>
+        <div class="pdf-row"><span class="lbl">Autoconsommation</span><span class="val">${calcs.selfConsumptionRate}%</span></div>
+      </div>
+    </div>
+  </div>
+
+  ${(sim.appliances || []).length > 0 ? `
+  <div class="pdf-section">
+    <div class="pdf-section-title">Inventaire des équipements (${(sim.appliances || []).length})</div>
+    <div class="pdf-equip">
+      ${(sim.appliances || []).map(a => `
+        <div>
+          <span class="name">${a.emoji || ''} ${a.name}</span>
+          <span class="kwh">${Math.round((Number(a.kwh_year) || 0) * ((Number(a.days_per_week) || 7) / 7))} kWh</span>
+        </div>
+      `).join('')}
+    </div>
+  </div>
+  ` : ''}
+
+  ${sim.notes ? `
+  <div class="pdf-notes">
+    <div class="lbl">Observations</div>
+    <div>${sim.notes.replace(/\n/g, '<br>')}</div>
+  </div>
+  ` : ''}
+
+  <div class="pdf-impact">
+    <h3>Impact environnemental — projection sur 25 ans</h3>
+    <div class="pdf-impact-grid">
+      <div>
+        <div class="val">${calcs.co2Saved.toLocaleString('fr-FR')}</div>
+        <div class="lbl">kg CO₂ / an</div>
+      </div>
+      <div>
+        <div class="val">${(calcs.co2Saved * 25 / 1000).toFixed(1)} t</div>
+        <div class="lbl">CO₂ évité 25 ans</div>
+      </div>
+      <div>
+        <div class="val">${Math.round(calcs.co2Saved * 25 / 22)}</div>
+        <div class="lbl">arbres équivalents</div>
+      </div>
+    </div>
+  </div>
+
+  ${mapUrl ? `
+  <div class="pdf-calepinage">
+    <div class="pdf-section-title">Calepinage du toit — vue satellite</div>
+    ${mapDataUrl
+      ? `<img src="${mapDataUrl}" alt="Calepinage du toit" />
+         <div class="pdf-calepinage-cap">Imagerie satellite Google · Analyse Google Solar API${sim.roof_data?.imageryQuality ? ` · Qualité : ${sim.roof_data.imageryQuality}` : ''} · ${finalPanels} panneaux retenus</div>`
+      : `<div class="pdf-calepinage-error"><strong>Image satellite indisponible.</strong><br>${mapErrorMessage || 'Erreur de chargement.'}</div>`
+    }
+  </div>
+  ` : ''}
+
+  <div class="pdf-footer">
+    <strong>Étude établie par ${profile.full_name}</strong><br>
+    Document à valeur indicative · Établi le ${today} · Référence ${ref}<br>
+    Solar Sim — Outil professionnel d'étude photovoltaïque
+  </div>
+
 </div>
   `;
 
@@ -2283,6 +2277,109 @@ function Toast({ toast }) {
 // Full-screen overlay shown after the user clicks 'Démarrer la vérification' on step 6.
 // Plays a sequence of fake-progressing checks for ~7 s before MainApp jumps to the Récap.
 // Each check ticks green one after another to feel like a real backend pipeline.
+// Read-only interactive Google Maps preview used in the Récap (step 7).
+// Same rendering as StepCalepinage (panels properly placed on the rooftop because
+// the JS API compensates for satellite imagery angle), but no click-to-edit.
+function RoofPreviewMap({ sim, height = 360 }) {
+  const mapDivRef = useRef(null);
+  const mapRef = useRef(null);
+  const polygonsRef = useRef([]);
+  const [ready, setReady] = useState(false);
+  const [err, setErr] = useState(null);
+  const rd = sim.roof_data?.solarPotential;
+  const selectedSet = useMemo(
+    () => new Set(sim.selected_panels?.length ? sim.selected_panels : (rd?.solarPanels?.map((_, i) => i) || [])),
+    [sim.selected_panels, rd]
+  );
+
+  useEffect(() => {
+    if (!sim.lat || !sim.lon) return;
+    let cancelled = false;
+    setErr(null);
+    loadGoogleMapsApi()
+      .then(google => {
+        if (cancelled || !mapDivRef.current) return;
+        const map = new google.maps.Map(mapDivRef.current, {
+          center: { lat: sim.lat, lng: sim.lon },
+          zoom: 21,
+          mapTypeId: google.maps.MapTypeId.SATELLITE,
+          tilt: 0,
+          rotateControl: false,
+          streetViewControl: false,
+          fullscreenControl: false,
+          mapTypeControl: false,
+          zoomControl: false,
+          gestureHandling: 'none',
+          disableDoubleClickZoom: true,
+          keyboardShortcuts: false,
+        });
+        mapRef.current = map;
+        setReady(true);
+      })
+      .catch(e => { if (!cancelled) setErr(e.message || 'Erreur carte'); });
+    return () => {
+      cancelled = true;
+      polygonsRef.current.forEach(p => p.setMap?.(null));
+      polygonsRef.current = [];
+      mapRef.current = null;
+      setReady(false);
+    };
+  }, [sim.lat, sim.lon]);
+
+  useEffect(() => {
+    if (!ready || !mapRef.current || !rd) return;
+    const google = window.google;
+    const map = mapRef.current;
+    polygonsRef.current.forEach(p => p.setMap(null));
+    polygonsRef.current = [];
+    const panelW = rd.panelWidthMeters || 1.05;
+    const panelH = rd.panelHeightMeters || 1.75;
+    const segments = rd.roofSegmentStats || [];
+    rd.solarPanels.forEach((panel, idx) => {
+      if (!selectedSet.has(idx)) return; // récap shows only RETAINED panels
+      const seg = segments[panel.segmentIndex];
+      const az = seg?.azimuthDegrees ?? 180;
+      const path = panelToPolygon(panel, panelW, panelH, az);
+      const poly = new google.maps.Polygon({
+        paths: path,
+        strokeColor: '#0f172a', strokeOpacity: 1, strokeWeight: 1.4,
+        fillColor: '#f59e0b', fillOpacity: 0.7,
+        clickable: false, map,
+      });
+      polygonsRef.current.push(poly);
+    });
+    if (rd.solarPanels.length) {
+      const bounds = new google.maps.LatLngBounds();
+      rd.solarPanels.forEach((panel) => {
+        const seg = segments[panel.segmentIndex];
+        const az = seg?.azimuthDegrees ?? 180;
+        const path = panelToPolygon(panel, panelW, panelH, az);
+        path.forEach(pt => bounds.extend(pt));
+      });
+      map.fitBounds(bounds, { top: 30, bottom: 30, left: 30, right: 30 });
+    }
+  }, [ready, rd, selectedSet]);
+
+  if (err) {
+    return (
+      <div className="rounded-md border border-slate-200 bg-slate-100 flex items-center justify-center text-sm text-slate-500" style={{ height }}>
+        Impossible d'afficher la carte
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-md overflow-hidden border border-slate-200 bg-slate-100 relative" style={{ height }}>
+      <div ref={mapDivRef} className="w-full h-full" />
+      {!ready && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <Loader2 className="w-6 h-6 animate-spin text-slate-700" />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EligibilityCheckOverlay({ visible }) {
   const [stepIdx, setStepIdx] = useState(0);
   // Per-step durations (ms) — eligibility check is intentionally longer for dramatic effect.
@@ -3716,18 +3813,12 @@ function StepRecap({ sim, calcs, profile }) {
         </div>
       </div>
 
-      {/* Calepinage preview */}
-      {staticMapUrl && (
+      {/* Calepinage preview — interactive Google Maps so panels are placed correctly on the roof
+          (Static Maps shows them twisted because of imagery oblique angle). */}
+      {sim.lat && sim.lon && sim.roof_data && (
         <Card>
           <CardHeader icon={MapPin} title="Calepinage" subtitle={`${finalPanels} panneaux placés sur le toit · production estimée ${finalProd.toLocaleString('fr-FR')} kWh/an`} />
-          <div className="rounded-md overflow-hidden border border-slate-200 bg-slate-100">
-            <img
-              src={staticMapUrl}
-              alt={`Calepinage du toit pour ${sim.client_name || 'le client'}`}
-              className="w-full h-auto block"
-              loading="lazy"
-            />
-          </div>
+          <RoofPreviewMap sim={sim} height={380} />
           <div className="text-[10px] text-slate-400 mt-2">
             Imagerie satellite Google · Analyse Google Solar API
             {sim.roof_data?.imageryQuality && ` · Qualité : ${sim.roof_data.imageryQuality}`}
