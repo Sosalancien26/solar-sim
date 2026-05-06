@@ -253,6 +253,75 @@ function panelToPolygon(panel, panelWidthM, panelHeightM, segmentAzimuthDeg) {
   });
 }
 
+// Build a Google Static Maps URL with the selected panels overlaid as polygons.
+// Used for the Récap step preview and embedded as <img> in the generated PDF.
+// Returns null if there's not enough data to render.
+function buildStaticMapUrl(sim, opts = {}) {
+  if (!sim?.lat || !sim?.lon || !sim.roof_data?.solarPotential) return null;
+  const rd = sim.roof_data.solarPotential;
+  const segs = rd.roofSegmentStats || [];
+  const panelW = rd.panelWidthMeters || 1.05;
+  const panelH = rd.panelHeightMeters || 1.75;
+  const indices = sim.selected_panels?.length ? sim.selected_panels : rd.solarPanels.map((_, i) => i);
+  const size = opts.size || '800x500';
+  const zoom = opts.zoom || 20;
+  const scale = opts.scale || 2;
+  const params = [
+    `center=${sim.lat},${sim.lon}`,
+    `zoom=${zoom}`,
+    `size=${size}`,
+    `scale=${scale}`,
+    `maptype=satellite`,
+    `key=${GOOGLE_MAPS_API_KEY}`,
+  ];
+  // Cap at 60 panels to stay safely under the ~8192 char URL limit Google enforces.
+  const limited = indices.slice(0, 60);
+  limited.forEach(idx => {
+    const p = rd.solarPanels[idx];
+    if (!p) return;
+    const seg = segs[p.segmentIndex];
+    const az = seg?.azimuthDegrees ?? 180;
+    const path = panelToPolygon(p, panelW, panelH, az);
+    // Closed polygon (Static Maps requires last point = first point for fillcolor)
+    const closed = path.concat([path[0]]);
+    const pathStr =
+      `color:0x0f172aFF|fillcolor:0xf59e0bCC|weight:1|`
+      + closed.map(pt => `${pt.lat.toFixed(7)},${pt.lng.toFixed(7)}`).join('|');
+    params.push(`path=${encodeURIComponent(pathStr)}`);
+  });
+  return `https://maps.googleapis.com/maps/api/staticmap?${params.join('&')}`;
+}
+
+// Compute the actual calepinage stats from selected_panels, falling back to step-5 values
+// when the user hasn't been through the calepinage step (older sims, or no roof data).
+function getCalepinageStats(sim, calcs) {
+  const rd = sim.roof_data?.solarPotential;
+  const sel = Array.isArray(sim.selected_panels) ? sim.selected_panels : null;
+  if (!rd || !sel?.length) {
+    // Fallback to step 5 target
+    const finalKwc = sim.final_kwc ?? calcs.recommendedKwc;
+    const finalPanels = sim.final_panels ?? calcs.recommendedPanels;
+    return {
+      hasCalepinage: false,
+      count: finalPanels,
+      kwc: finalKwc,
+      prodKwh: calcs.production,
+    };
+  }
+  const panelW = rd.panelCapacityWatts || 400;
+  let prod = 0;
+  sel.forEach(idx => {
+    const p = rd.solarPanels[idx];
+    if (p) prod += (p.yearlyEnergyDcKwh || 0);
+  });
+  return {
+    hasCalepinage: true,
+    count: sel.length,
+    kwc: Math.round(((sel.length * panelW) / 1000) * 100) / 100,
+    prodKwh: Math.round(prod),
+  };
+}
+
 // ============ GOOGLE SOLAR API ============
 // Calls Solar API buildingInsights endpoint to get roof segments + available panel placements.
 // Throws Error('NOT_COVERED') if the building is not in Solar API coverage (404 from Google).
@@ -1769,12 +1838,17 @@ function computeAll(sim) {
 // ============ PDF GENERATION ============
 
 function generatePDF(sim, calcs, profile) {
-  const finalKwc = sim.final_kwc ?? calcs.recommendedKwc;
-  const finalPanels = sim.final_panels ?? calcs.recommendedPanels;
+  // Calepinage drives the final numbers if the user selected panels at step 6.
+  const cal = getCalepinageStats(sim, calcs);
+  const finalKwc = cal.kwc;
+  const finalPanels = cal.count;
+  const finalProd = cal.prodKwh;
   const surface = Math.round(finalPanels * 1.95);
   const refConso = numOrNull(sim.annual_consumption_kwh) || calcs.estimatedConsumption;
   const today = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' });
   const ref = `SIM-${(sim.id || '').slice(0, 8).toUpperCase()}`;
+  // Static map URL embedded as an <img> in the PDF (no extra fetch — the browser handles it).
+  const mapUrl = buildStaticMapUrl(sim, { size: '720x420', zoom: 20 });
 
   const html = `
 <!DOCTYPE html>
@@ -1828,6 +1902,9 @@ function generatePDF(sim, calcs, profile) {
   .footer strong { color: #475569; }
   .notes { background: #f8fafc; border-left: 3px solid #0f172a; padding: 10px 14px; margin: 15px 0; font-size: 9pt; }
   .notes-title { font-size: 7.5pt; text-transform: uppercase; letter-spacing: 1.5px; color: #64748b; font-weight: 700; margin-bottom: 4px; }
+  .calepinage { margin: 18px 0; page-break-inside: avoid; }
+  .calepinage img { width: 100%; height: auto; display: block; border: 1px solid #e2e8f0; border-radius: 6px; }
+  .calepinage-caption { font-size: 7.5pt; color: #94a3b8; margin-top: 4px; text-align: center; letter-spacing: 0.5px; }
 </style>
 </head>
 <body>
@@ -1905,10 +1982,19 @@ function generatePDF(sim, calcs, profile) {
     <div class="row"><span class="label">Puissance</span><span class="value">${finalKwc} kWc</span></div>
     <div class="row"><span class="label">Nombre de panneaux</span><span class="value">${finalPanels} × ${sim.panel_power_w}W</span></div>
     <div class="row"><span class="label">Surface</span><span class="value">~${surface} m²</span></div>
+    <div class="row"><span class="label">Production annuelle</span><span class="value">${finalProd.toLocaleString('fr-FR')} kWh</span></div>
     <div class="row"><span class="label">Conso annuelle</span><span class="value">${refConso.toLocaleString('fr-FR')} kWh</span></div>
     <div class="row"><span class="label">Autoconsommation</span><span class="value">${calcs.selfConsumptionRate}%</span></div>
   </div>
 </div>
+
+${mapUrl ? `
+<div class="calepinage">
+  <div class="section-title">Calepinage du toit — vue satellite</div>
+  <img src="${mapUrl}" alt="Calepinage du toit" />
+  <div class="calepinage-caption">Imagerie satellite Google · Analyse Google Solar API${sim.roof_data?.imageryQuality ? ` · Qualité : ${sim.roof_data.imageryQuality}` : ''}</div>
+</div>
+` : ''}
 
 ${(sim.appliances || []).length > 0 ? `
 <div class="section">
@@ -1966,8 +2052,20 @@ ${sim.notes ? `
   }
   win.document.write(html);
   win.document.close();
+  // Wait for all images (especially the Static Maps tile) to fully load before printing,
+  // otherwise the PDF can be generated with the calepinage image still blank.
   win.onload = () => {
-    setTimeout(() => { win.focus(); win.print(); }, 250);
+    const images = Array.from(win.document.images || []);
+    const doPrint = () => setTimeout(() => { win.focus(); win.print(); }, 200);
+    if (images.length === 0) { doPrint(); return; }
+    let pending = images.length;
+    const onSettled = () => { if (--pending <= 0) doPrint(); };
+    images.forEach(img => {
+      if (img.complete) onSettled();
+      else { img.addEventListener('load', onSettled); img.addEventListener('error', onSettled); }
+    });
+    // Safety net: print anyway after 6 s if some image stalls
+    setTimeout(() => { try { win.print(); } catch {} }, 6000);
   };
 }
 
@@ -3275,11 +3373,20 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
 }
 
 function StepRecap({ sim, calcs, profile }) {
-  const finalKwc = sim.final_kwc ?? calcs.recommendedKwc;
-  const finalPanels = sim.final_panels ?? calcs.recommendedPanels;
+  // Calepinage drives the final numbers when the user has selected panels at step 6,
+  // otherwise we fall back to the step-5 commercial target.
+  const cal = getCalepinageStats(sim, calcs);
+  const finalKwc = cal.kwc;
+  const finalPanels = cal.count;
+  const finalProd = cal.prodKwh;
   const refConso = numOrNull(sim.annual_consumption_kwh) || calcs.estimatedConsumption;
   const surface = Math.round(finalPanels * 1.95);
   const today = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' });
+  const staticMapUrl = buildStaticMapUrl(sim, { size: '720x420', zoom: 20 });
+  // Step 5 target (original commercial target) — shown as a small note if it differs from calepinage
+  const targetKwc = sim.final_kwc ?? calcs.recommendedKwc;
+  const targetPanels = sim.final_panels ?? calcs.recommendedPanels;
+  const calepinageDiffersFromTarget = cal.hasCalepinage && (finalPanels !== targetPanels);
 
   return (
     <div className="space-y-4">
@@ -3317,8 +3424,32 @@ function StepRecap({ sim, calcs, profile }) {
             <MiniStat label="Autoconsommation" value={`${calcs.selfConsumptionRate}%`} highlight />
             <MiniStat label="Surface panneaux" value={`${surface}`} unit="m²" />
           </div>
+          {calepinageDiffersFromTarget && (
+            <div className="mt-3 text-[11px] opacity-70 italic">
+              Cible commerciale (étape 5) : {targetKwc} kWc / {targetPanels} panneaux — ajusté lors du calepinage.
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Calepinage preview */}
+      {staticMapUrl && (
+        <Card>
+          <CardHeader icon={MapPin} title="Calepinage" subtitle={`${finalPanels} panneaux placés sur le toit · production estimée ${finalProd.toLocaleString('fr-FR')} kWh/an`} />
+          <div className="rounded-md overflow-hidden border border-slate-200 bg-slate-100">
+            <img
+              src={staticMapUrl}
+              alt={`Calepinage du toit pour ${sim.client_name || 'le client'}`}
+              className="w-full h-auto block"
+              loading="lazy"
+            />
+          </div>
+          <div className="text-[10px] text-slate-400 mt-2">
+            Imagerie satellite Google · Analyse Google Solar API
+            {sim.roof_data?.imageryQuality && ` · Qualité : ${sim.roof_data.imageryQuality}`}
+          </div>
+        </Card>
+      )}
 
       <div className="grid grid-cols-2 gap-3">
         <BigStat icon={TrendingUp} label="Autoconsommation" value={`${calcs.selfConsumptionRate}%`} accent />
@@ -3355,6 +3486,7 @@ function StepRecap({ sim, calcs, profile }) {
             <Row label="Puissance" value={`${finalKwc} kWc`} />
             <Row label="Nb panneaux" value={`${finalPanels} × ${sim.panel_power_w}W`} />
             <Row label="Surface" value={`~${surface} m²`} />
+            <Row label="Production annuelle" value={`${finalProd.toLocaleString('fr-FR')} kWh`} />
             <Row label="Conso annuelle" value={`${refConso.toLocaleString('fr-FR')} kWh`} />
             <Row label="Autoconsommation" value={`${calcs.selfConsumptionRate}%`} />
             <Row label="Équipements" value={`${(sim.appliances || []).length} équipements identifiés`} />
