@@ -100,7 +100,8 @@ const STEPS = [
   { id: 3, label: 'Équipements', icon: Zap },
   { id: 4, label: 'Conso', icon: BarChart3 },
   { id: 5, label: 'Solution', icon: Settings },
-  { id: 6, label: 'Récap', icon: Award },
+  { id: 6, label: 'Calepinage', icon: MapPin },
+  { id: 7, label: 'Récap', icon: Award },
 ];
 
 const initialSim = {
@@ -204,6 +205,52 @@ async function apiCall(path, options = {}) {
     }
   }
   throw lastErr || new Error('Network error');
+}
+
+// ============ GOOGLE MAPS JS API LOADER ============
+// Singleton loader: we only ever inject the script tag once.
+let _googleMapsLoadPromise = null;
+function loadGoogleMapsApi() {
+  if (typeof window === 'undefined') return Promise.reject(new Error('SSR'));
+  if (window.google?.maps) return Promise.resolve(window.google);
+  if (_googleMapsLoadPromise) return _googleMapsLoadPromise;
+  _googleMapsLoadPromise = new Promise((resolve, reject) => {
+    const cbName = `__gmCb_${Math.random().toString(36).slice(2)}`;
+    window[cbName] = () => { resolve(window.google); try { delete window[cbName]; } catch {} };
+    const s = document.createElement('script');
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&v=weekly&loading=async&callback=${cbName}`;
+    s.async = true;
+    s.defer = true;
+    s.onerror = () => { _googleMapsLoadPromise = null; reject(new Error('Échec du chargement de Google Maps')); };
+    document.head.appendChild(s);
+  });
+  return _googleMapsLoadPromise;
+}
+
+// Convert a Solar API panel (center + orientation + segment azimuth + panel dimensions)
+// into a 4-vertex polygon (lat/lng) suitable for google.maps.Polygon paths.
+// The panel's "along the slope" axis is aligned with the segment azimuth direction.
+function panelToPolygon(panel, panelWidthM, panelHeightM, segmentAzimuthDeg) {
+  const azRad = (segmentAzimuthDeg * Math.PI) / 180;
+  let alongLen, acrossLen;
+  if (panel.orientation === 'PORTRAIT') {
+    alongLen = panelHeightM; // long edge follows slope direction
+    acrossLen = panelWidthM;
+  } else {
+    alongLen = panelWidthM;
+    acrossLen = panelHeightM;
+  }
+  const ha = alongLen / 2, hc = acrossLen / 2;
+  const corners = [[-ha, -hc], [+ha, -hc], [+ha, +hc], [-ha, +hc]];
+  const latRef = panel.center.latitude;
+  const lonRef = panel.center.longitude;
+  const mPerLat = 111320;
+  const mPerLon = 111320 * Math.cos((latRef * Math.PI) / 180);
+  return corners.map(([a, c]) => {
+    const north = a * Math.cos(azRad) + c * (-Math.sin(azRad));
+    const east  = a * Math.sin(azRad) + c * (+Math.cos(azRad));
+    return { lat: latRef + north / mPerLat, lng: lonRef + east / mPerLon };
+  });
 }
 
 // ============ GOOGLE SOLAR API ============
@@ -968,7 +1015,7 @@ function MainApp({ session, profile, onLogout }) {
             </div>
             <div className="flex items-center gap-2">
               <SaveBadge dirty={isDirty} status={autosaveStatus} lastSavedAt={lastSavedAt} />
-              {currentSim.id && step === 6 && (
+              {currentSim.id && step === 7 && (
                 <button
                   onClick={() => generatePDF(currentSim, calcs, profile)}
                   className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded-md font-semibold flex items-center gap-1.5 text-sm shadow-sm"
@@ -1022,7 +1069,8 @@ function MainApp({ session, profile, onLogout }) {
         {step === 3 && <StepAppliances sim={currentSim} update={updateSim} />}
         {step === 4 && <StepConsumption sim={currentSim} update={updateSim} calcs={calcs} />}
         {step === 5 && <StepSizing sim={currentSim} update={updateSim} calcs={calcs} overrideMode={overrideMode} setOverrideMode={setOverrideMode} />}
-        {step === 6 && <StepRecap sim={currentSim} calcs={calcs} profile={profile} />}
+        {step === 6 && <StepCalepinage sim={currentSim} update={updateSim} calcs={calcs} roofFetchStatus={roofFetchStatus} showToast={showToast} />}
+        {step === 7 && <StepRecap sim={currentSim} calcs={calcs} profile={profile} />}
 
         <div className="flex items-center justify-between mt-8 gap-3">
           <button onClick={() => tryGoToStep(Math.max(1, step - 1))} disabled={step === 1}
@@ -1614,14 +1662,21 @@ function stepCompletion(step, sim) {
     return sim.final_kwc != null ? 100 : 50;
   }
   if (step === 6) {
+    // Calepinage: complete if user has explicitly selected panels OR if roof analysis succeeded
+    const sel = Array.isArray(sim.selected_panels) ? sim.selected_panels.length : 0;
+    if (sel > 0) return 100;
+    if (sim.roof_data) return 50;
+    return 0;
+  }
+  if (step === 7) {
     return 100;
   }
   return 0;
 }
 
 function overallProgress(sim) {
-  const total = [1,2,3,4,5,6].reduce((sum, s) => sum + stepCompletion(s, sim), 0);
-  return Math.round(total / 6);
+  const total = [1,2,3,4,5,6,7].reduce((sum, s) => sum + stepCompletion(s, sim), 0);
+  return Math.round(total / 7);
 }
 
 function validateStep(step, sim) {
@@ -2846,6 +2901,332 @@ function StepSizing({ sim, update, calcs, overrideMode, setOverrideMode }) {
           </div>
         </Field>
       </Card>
+    </div>
+  );
+}
+
+// ============ STEP 6 — CALEPINAGE ============
+
+function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
+  const mapDivRef = useRef(null);
+  const mapRef = useRef(null);
+  const polygonsRef = useRef([]);
+  const buildingMarkerRef = useRef(null);
+  const [mapReady, setMapReady] = useState(false);
+  const [mapError, setMapError] = useState(null);
+  const [activePreset, setActivePreset] = useState('optimal'); // optimal | maximum | esthetique
+
+  const rd = sim.roof_data?.solarPotential;
+  const targetPanels = sim.final_panels ?? calcs.recommendedPanels ?? 0;
+
+  // Pre-computed indices for each preset (deterministic, recomputed when roof_data or target changes)
+  const presets = useMemo(() => {
+    if (!rd?.solarPanels?.length) return { optimal: [], maximum: [], esthetique: [] };
+    const total = rd.solarPanels.length;
+    const target = Math.max(1, Math.min(targetPanels || total, total));
+    // Optimal: top N most efficient (solarPanels is sorted by yearlyEnergyDcKwh DESC)
+    const optimal = Array.from({ length: target }, (_, i) => i);
+    // Maximum: every panel that fits on the roof
+    const maximum = Array.from({ length: total }, (_, i) => i);
+    // Esthétique: best panels grouped on the largest roof segment (avoids isolated panels on small faces)
+    const segs = (rd.roofSegmentStats || []).map((s, i) => ({ i, area: s.stats?.areaMeters2 || 0 }));
+    segs.sort((a, b) => b.area - a.area);
+    const bestSegmentIdx = segs[0]?.i ?? 0;
+    const esthetique = rd.solarPanels
+      .map((p, idx) => ({ idx, segmentIndex: p.segmentIndex }))
+      .filter(({ segmentIndex }) => segmentIndex === bestSegmentIdx)
+      .slice(0, target)
+      .map(({ idx }) => idx);
+    return { optimal, maximum, esthetique };
+  }, [rd, targetPanels]);
+
+  // The currently selected panels: either the user's saved choice OR the active preset
+  const selectedSet = useMemo(() => {
+    const ids = sim.selected_panels?.length ? sim.selected_panels : (presets[activePreset] || []);
+    return new Set(ids);
+  }, [sim.selected_panels, presets, activePreset]);
+
+  // When user picks a preset (and hasn't manually edited yet), persist it as selected_panels.
+  // We treat "user has edited" as "selected_panels is set AND doesn't match any of the 3 presets".
+  const applyPreset = (key) => {
+    setActivePreset(key);
+    update({ selected_panels: presets[key] });
+    showToast(`Preset "${key === 'optimal' ? 'Optimal' : key === 'maximum' ? 'Maximum' : 'Esthétique'}" appliqué`);
+  };
+
+  // Default selected_panels when none set yet and roof_data just landed
+  useEffect(() => {
+    if (!rd) return;
+    if (sim.selected_panels?.length) return;
+    update({ selected_panels: presets.optimal });
+  }, [rd]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Live stats for the currently displayed panels
+  const stats = useMemo(() => {
+    if (!rd) return { count: 0, kwc: 0, prodKwh: 0 };
+    const panelW = rd.panelCapacityWatts || 400;
+    let prod = 0;
+    selectedSet.forEach(idx => {
+      const p = rd.solarPanels[idx];
+      if (p) prod += (p.yearlyEnergyDcKwh || 0);
+    });
+    return {
+      count: selectedSet.size,
+      kwc: ((selectedSet.size * panelW) / 1000),
+      prodKwh: Math.round(prod),
+    };
+  }, [selectedSet, rd]);
+
+  // ---------- Map lifecycle ----------
+  useEffect(() => {
+    if (!sim.lat || !sim.lon) return;
+    let cancelled = false;
+    setMapError(null);
+    loadGoogleMapsApi()
+      .then(google => {
+        if (cancelled || !mapDivRef.current) return;
+        const center = { lat: sim.lat, lng: sim.lon };
+        const map = new google.maps.Map(mapDivRef.current, {
+          center,
+          zoom: 21,
+          mapTypeId: google.maps.MapTypeId.SATELLITE,
+          tilt: 0,
+          rotateControl: false,
+          streetViewControl: false,
+          fullscreenControl: true,
+          mapTypeControl: false,
+          gestureHandling: 'greedy',
+        });
+        mapRef.current = map;
+        // Drop a small marker on the building center
+        buildingMarkerRef.current = new google.maps.Marker({
+          position: center,
+          map,
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 6,
+            fillColor: '#f59e0b',
+            fillOpacity: 1,
+            strokeColor: '#0f172a',
+            strokeWeight: 2,
+          },
+        });
+        setMapReady(true);
+      })
+      .catch(err => { if (!cancelled) setMapError(err.message || 'Erreur de chargement carte'); });
+    return () => {
+      cancelled = true;
+      // Clean up polygons & marker
+      polygonsRef.current.forEach(p => p.setMap?.(null));
+      polygonsRef.current = [];
+      buildingMarkerRef.current?.setMap?.(null);
+      buildingMarkerRef.current = null;
+      mapRef.current = null;
+      setMapReady(false);
+    };
+  }, [sim.lat, sim.lon]);
+
+  // ---------- Re-draw polygons when selection changes ----------
+  useEffect(() => {
+    if (!mapReady || !mapRef.current || !rd) return;
+    const google = window.google;
+    const map = mapRef.current;
+    // Clear previous polygons
+    polygonsRef.current.forEach(p => p.setMap(null));
+    polygonsRef.current = [];
+
+    const panelW = rd.panelWidthMeters || 1.05;
+    const panelH = rd.panelHeightMeters || 1.75;
+    const segments = rd.roofSegmentStats || [];
+
+    rd.solarPanels.forEach((panel, idx) => {
+      const seg = segments[panel.segmentIndex];
+      const az = seg?.azimuthDegrees ?? 180;
+      const path = panelToPolygon(panel, panelW, panelH, az);
+      const isSelected = selectedSet.has(idx);
+      const poly = new google.maps.Polygon({
+        paths: path,
+        strokeColor: isSelected ? '#0f172a' : '#94a3b8',
+        strokeOpacity: 1,
+        strokeWeight: 1.2,
+        fillColor: isSelected ? '#f59e0b' : '#64748b',
+        fillOpacity: isSelected ? 0.65 : 0.18,
+        clickable: false, // edition arrives in sprint 3
+        map,
+      });
+      polygonsRef.current.push(poly);
+    });
+
+    // Auto-fit map to building + panels on first render
+    if (rd.solarPanels.length) {
+      const bounds = new google.maps.LatLngBounds();
+      rd.solarPanels.forEach((panel) => {
+        const seg = segments[panel.segmentIndex];
+        const az = seg?.azimuthDegrees ?? 180;
+        const path = panelToPolygon(panel, panelW, panelH, az);
+        path.forEach(pt => bounds.extend(pt));
+      });
+      map.fitBounds(bounds, { top: 40, bottom: 40, left: 40, right: 40 });
+    }
+  }, [mapReady, rd, selectedSet]);
+
+  // ---------- Empty/error states ----------
+  if (!sim.lat || !sim.lon) {
+    return (
+      <Card>
+        <CardHeader icon={MapPin} title="Calepinage" subtitle="Visualisation du toit et placement des panneaux" num="06" />
+        <div className="text-center py-12 px-4">
+          <div className="w-14 h-14 mx-auto mb-4 rounded-lg bg-slate-100 flex items-center justify-center">
+            <MapPin className="w-7 h-7 text-slate-400" />
+          </div>
+          <h3 className="text-base font-bold text-slate-900 mb-1">Adresse manquante</h3>
+          <p className="text-sm text-slate-500 max-w-md mx-auto">
+            Retournez à l'étape 1 et saisissez l'adresse du chantier en utilisant l'autocomplétion. Cela permettra l'analyse satellite du toit.
+          </p>
+        </div>
+      </Card>
+    );
+  }
+
+  if (roofFetchStatus === 'loading') {
+    return (
+      <Card>
+        <CardHeader icon={MapPin} title="Calepinage" subtitle="Analyse du toit en cours…" num="06" />
+        <div className="text-center py-12">
+          <Loader2 className="w-8 h-8 animate-spin text-slate-700 mx-auto mb-3" />
+          <p className="text-sm text-slate-600 font-semibold">Analyse satellite du toit…</p>
+          <p className="text-xs text-slate-400 mt-1">Quelques secondes encore</p>
+        </div>
+      </Card>
+    );
+  }
+
+  if (roofFetchStatus === 'not_covered') {
+    return (
+      <Card>
+        <CardHeader icon={MapPin} title="Calepinage" subtitle="Zone non couverte" num="06" />
+        <div className="text-center py-12 px-4">
+          <div className="w-14 h-14 mx-auto mb-4 rounded-lg bg-amber-50 flex items-center justify-center">
+            <AlertCircle className="w-7 h-7 text-amber-500" />
+          </div>
+          <h3 className="text-base font-bold text-slate-900 mb-1">Cette zone n'est pas couverte par l'analyse satellite Google</h3>
+          <p className="text-sm text-slate-500 max-w-md mx-auto">
+            Pas de souci — la simulation de production reste valide. Le calepinage manuel sera disponible en complément (à venir).
+          </p>
+        </div>
+      </Card>
+    );
+  }
+
+  if (roofFetchStatus === 'error' || !rd) {
+    return (
+      <Card>
+        <CardHeader icon={MapPin} title="Calepinage" subtitle="Erreur d'analyse" num="06" />
+        <div className="text-center py-12 px-4">
+          <div className="w-14 h-14 mx-auto mb-4 rounded-lg bg-red-50 flex items-center justify-center">
+            <X className="w-7 h-7 text-red-500" />
+          </div>
+          <h3 className="text-base font-bold text-slate-900 mb-1">Échec de l'analyse satellite</h3>
+          <p className="text-sm text-slate-500 max-w-md mx-auto">
+            Vérifiez votre connexion. Vous pouvez également retourner à l'étape 1 et re-sélectionner l'adresse pour relancer.
+          </p>
+        </div>
+      </Card>
+    );
+  }
+
+  // ---------- Main render ----------
+  const presetButton = (key, label, icon, sub) => (
+    <button
+      onClick={() => applyPreset(key)}
+      className={`flex-1 p-3 rounded-md border text-left transition-all ${activePreset === key ? 'border-slate-900 bg-slate-900 text-white shadow-sm' : 'border-slate-200 bg-white hover:border-slate-400 text-slate-700'}`}
+    >
+      <div className="flex items-center gap-2 mb-1">
+        {icon}
+        <span className="text-sm font-bold">{label}</span>
+      </div>
+      <div className={`text-[10px] ${activePreset === key ? 'text-amber-400' : 'text-slate-500'}`}>{sub}</div>
+    </button>
+  );
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader icon={MapPin} title="Calepinage du toit" subtitle="Visualisation des panneaux sur l'imagerie satellite" num="06" />
+
+        {/* Live stats */}
+        <div className="bg-slate-900 rounded-md p-4 text-white mb-4 grid grid-cols-3 gap-4">
+          <div>
+            <div className="text-[10px] font-bold opacity-70 uppercase tracking-widest">Panneaux</div>
+            <div className="text-2xl font-bold mt-0.5">{stats.count}<span className="text-sm font-medium opacity-70 ml-1">/ {rd.solarPanels.length}</span></div>
+          </div>
+          <div>
+            <div className="text-[10px] font-bold opacity-70 uppercase tracking-widest">Puissance</div>
+            <div className="text-2xl font-bold text-amber-400 mt-0.5">{stats.kwc.toFixed(1)}<span className="text-sm font-medium opacity-70 ml-1">kWc</span></div>
+          </div>
+          <div>
+            <div className="text-[10px] font-bold opacity-70 uppercase tracking-widest">Production estimée</div>
+            <div className="text-2xl font-bold text-amber-400 mt-0.5">{stats.prodKwh.toLocaleString('fr-FR')}<span className="text-sm font-medium opacity-70 ml-1">kWh/an</span></div>
+          </div>
+        </div>
+
+        {/* Preset buttons */}
+        <div className="flex flex-col sm:flex-row gap-2 mb-4">
+          {presetButton('optimal', 'Optimal', <Target className="w-4 h-4" />, `Top ${presets.optimal.length} panneaux les plus rentables`)}
+          {presetButton('esthetique', 'Esthétique', <Sparkles className="w-4 h-4" />, `${presets.esthetique.length} panneaux groupés (versant principal)`)}
+          {presetButton('maximum', 'Maximum', <Flame className="w-4 h-4" />, `${presets.maximum.length} panneaux possibles sur le toit`)}
+        </div>
+
+        {/* Map */}
+        <div className="relative rounded-md overflow-hidden border border-slate-200" style={{ height: '480px' }}>
+          <div ref={mapDivRef} className="w-full h-full" />
+          {!mapReady && !mapError && (
+            <div className="absolute inset-0 bg-slate-100 flex items-center justify-center">
+              <Loader2 className="w-7 h-7 animate-spin text-slate-700" />
+            </div>
+          )}
+          {mapError && (
+            <div className="absolute inset-0 bg-slate-100 flex items-center justify-center px-6 text-center">
+              <div>
+                <X className="w-8 h-8 text-red-500 mx-auto mb-2" />
+                <p className="text-sm font-semibold text-slate-800">{mapError}</p>
+                <p className="text-xs text-slate-500 mt-1">Vérifiez les restrictions de la clé Google Maps.</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Legend */}
+        <div className="mt-3 flex items-center gap-4 text-xs text-slate-500 flex-wrap">
+          <div className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded-sm" style={{ background: '#f59e0b', border: '1px solid #0f172a' }} />
+            Panneau retenu
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded-sm" style={{ background: 'rgba(100,116,139,0.18)', border: '1px solid #94a3b8' }} />
+            Panneau possible (non retenu)
+          </div>
+          {sim.roof_data?.imageryQuality && (
+            <div className="ml-auto text-[10px] uppercase tracking-wider font-semibold">
+              Qualité imagerie : {sim.roof_data.imageryQuality}
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {/* Discrepancy hint between target and selection */}
+      {targetPanels > 0 && stats.count !== targetPanels && (
+        <Card>
+          <div className="flex items-start gap-3 text-sm">
+            <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+            <div className="text-slate-700">
+              <span className="font-bold">Note :</span> votre cible à l'étape 5 était <strong>{targetPanels} panneaux</strong>,
+              le calepinage actuel en compte <strong>{stats.count}</strong>.
+              {stats.count > targetPanels ? ' Le toit permet plus que la cible.' : ' Le toit ne permet pas la cible visée — choisissez un autre preset ou ajustez l\'étape 5.'}
+            </div>
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
