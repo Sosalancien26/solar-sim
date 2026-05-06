@@ -198,7 +198,7 @@ function LoginScreen({ onLogin }) {
         setLoading(false);
         return;
       }
-      const email = `${cleanUsername}@solar-sim.local`;
+      const email = `${cleanUsername}@solarsim.app`;
 
       const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
         method: 'POST',
