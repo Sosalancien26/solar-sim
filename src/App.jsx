@@ -1837,7 +1837,7 @@ function computeAll(sim) {
 
 // ============ PDF GENERATION ============
 
-function generatePDF(sim, calcs, profile) {
+async function generatePDF(sim, calcs, profile) {
   // Calepinage drives the final numbers if the user selected panels at step 6.
   const cal = getCalepinageStats(sim, calcs);
   const finalKwc = cal.kwc;
@@ -1847,8 +1847,57 @@ function generatePDF(sim, calcs, profile) {
   const refConso = numOrNull(sim.annual_consumption_kwh) || calcs.estimatedConsumption;
   const today = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' });
   const ref = `SIM-${(sim.id || '').slice(0, 8).toUpperCase()}`;
-  // Static map URL embedded as an <img> in the PDF (no extra fetch — the browser handles it).
+
+  // Open the print window immediately with a loading screen so the user sees something happen
+  // while we fetch the satellite image. The window is replaced with the real content below.
+  const win = window.open('', '_blank');
+  if (!win) {
+    alert('Le navigateur a bloqué la fenêtre. Autorisez les popups pour cette page.');
+    return;
+  }
+  win.document.write(`<!doctype html><html><head><title>Préparation du PDF…</title>
+    <style>body{font-family:-apple-system,Segoe UI,sans-serif;background:#0f172a;color:#fff;height:100vh;margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px}
+    .spin{width:40px;height:40px;border:3px solid rgba(255,255,255,.15);border-top-color:#fbbf24;border-radius:50%;animation:s 1s linear infinite;margin-bottom:18px}
+    @keyframes s{to{transform:rotate(360deg)}}
+    h1{font-size:18pt;margin-bottom:6px;font-weight:700}
+    p{opacity:.6;font-size:11pt}</style></head>
+    <body><div class="spin"></div><h1>Préparation du PDF…</h1><p>Chargement de l'image satellite</p></body></html>`);
+  win.document.close();
+
+  // Pre-fetch the static map and inline it as a data URL.
+  // Two reasons:
+  //  1. The print window opens at about:blank — no Referer header that matches our restricted key.
+  //  2. Browsers print broken images as blank with no warning.
+  // Loading from the parent page (proper Referer) and embedding base64 sidesteps both.
   const mapUrl = buildStaticMapUrl(sim, { size: '720x420', zoom: 20 });
+  let mapDataUrl = null;
+  let mapErrorMessage = null;
+  if (mapUrl) {
+    try {
+      const res = await fetch(mapUrl);
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        if (text.includes('not authorized') || text.includes('Maps Static API')) {
+          mapErrorMessage = "L'API « Maps Static API » n'est pas activée dans Google Cloud.";
+        } else if (res.status === 403) {
+          mapErrorMessage = `Accès refusé par Google (${res.status}). Vérifiez les restrictions de la clé.`;
+        } else {
+          mapErrorMessage = `Image satellite indisponible (${res.status}).`;
+        }
+      } else {
+        const blob = await res.blob();
+        mapDataUrl = await new Promise(resolve => {
+          const r = new FileReader();
+          r.onloadend = () => resolve(r.result);
+          r.onerror = () => resolve(null);
+          r.readAsDataURL(blob);
+        });
+      }
+    } catch (e) {
+      mapErrorMessage = 'Impossible de charger l\'image satellite (erreur réseau).';
+      console.warn('Static map pre-fetch failed:', e);
+    }
+  }
 
   const html = `
 <!DOCTYPE html>
@@ -1858,8 +1907,8 @@ function generatePDF(sim, calcs, profile) {
 <title>Étude photovoltaïque - ${sim.client_name}</title>
 <style>
   @page { size: A4; margin: 15mm; }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; color: #0f172a; line-height: 1.5; font-size: 10pt; }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; color-adjust: exact !important; }
+  body { font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; color: #0f172a; line-height: 1.5; font-size: 10pt; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 20px; border-bottom: 3px solid #0f172a; margin-bottom: 25px; }
   .logo { display: flex; align-items: center; gap: 12px; }
   .logo-icon { width: 48px; height: 48px; background: #0f172a; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #fbbf24; font-size: 24px; }
@@ -1904,7 +1953,8 @@ function generatePDF(sim, calcs, profile) {
   .notes-title { font-size: 7.5pt; text-transform: uppercase; letter-spacing: 1.5px; color: #64748b; font-weight: 700; margin-bottom: 4px; }
   .calepinage { margin: 18px 0; page-break-inside: avoid; }
   .calepinage img { width: 100%; height: auto; display: block; border: 1px solid #e2e8f0; border-radius: 6px; }
-  .calepinage-caption { font-size: 7.5pt; color: #94a3b8; margin-top: 4px; text-align: center; letter-spacing: 0.5px; }
+  .calepinage-caption { font-size: 7.5pt; color: #94a3b8; margin-top: 6px; text-align: center; letter-spacing: 0.5px; }
+  .calepinage-error { padding: 18px; background: #fef3c7; border: 1px solid #fde68a; border-radius: 6px; color: #92400e; font-size: 9pt; text-align: center; line-height: 1.5; }
 </style>
 </head>
 <body>
@@ -1991,8 +2041,11 @@ function generatePDF(sim, calcs, profile) {
 ${mapUrl ? `
 <div class="calepinage">
   <div class="section-title">Calepinage du toit — vue satellite</div>
-  <img src="${mapUrl}" alt="Calepinage du toit" />
-  <div class="calepinage-caption">Imagerie satellite Google · Analyse Google Solar API${sim.roof_data?.imageryQuality ? ` · Qualité : ${sim.roof_data.imageryQuality}` : ''}</div>
+  ${mapDataUrl
+    ? `<img src="${mapDataUrl}" alt="Calepinage du toit pour ${sim.client_name || 'le client'}" />
+       <div class="calepinage-caption">Imagerie satellite Google · Analyse Google Solar API${sim.roof_data?.imageryQuality ? ` · Qualité : ${sim.roof_data.imageryQuality}` : ''} · ${finalPanels} panneaux retenus</div>`
+    : `<div class="calepinage-error"><strong>Image satellite indisponible.</strong><br>${mapErrorMessage || 'Erreur de chargement.'}</div>`
+  }
 </div>
 ` : ''}
 
@@ -2045,28 +2098,14 @@ ${sim.notes ? `
 </html>
   `;
 
-  const win = window.open('', '_blank');
-  if (!win) {
-    alert('Le navigateur a bloqué la fenêtre. Autorisez les popups pour cette page.');
-    return;
-  }
+  // Replace the loading screen with the actual report content
+  if (win.closed) return; // user already closed the loading window — bail
+  win.document.open();
   win.document.write(html);
   win.document.close();
-  // Wait for all images (especially the Static Maps tile) to fully load before printing,
-  // otherwise the PDF can be generated with the calepinage image still blank.
-  win.onload = () => {
-    const images = Array.from(win.document.images || []);
-    const doPrint = () => setTimeout(() => { win.focus(); win.print(); }, 200);
-    if (images.length === 0) { doPrint(); return; }
-    let pending = images.length;
-    const onSettled = () => { if (--pending <= 0) doPrint(); };
-    images.forEach(img => {
-      if (img.complete) onSettled();
-      else { img.addEventListener('load', onSettled); img.addEventListener('error', onSettled); }
-    });
-    // Safety net: print anyway after 6 s if some image stalls
-    setTimeout(() => { try { win.print(); } catch {} }, 6000);
-  };
+  // The image is already inlined as a data URL, so no async loading needed.
+  // Small delay lets the browser finish layout before opening the print dialog.
+  setTimeout(() => { try { win.focus(); win.print(); } catch {} }, 350);
 }
 
 // ============ UI COMPONENTS ============
