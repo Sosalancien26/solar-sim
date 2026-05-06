@@ -1936,7 +1936,7 @@ async function generatePDF(sim, calcs, profile, opts = {}) {
   // Pre-fetch the satellite map and inline it as a base64 data URL so html2pdf can rasterize it.
   // Zoom 21 matches the interactive on-screen calepinage view — imagery is more nadir
   // (less oblique angle) so the flat lat/lng polygons line up properly with the actual roof.
-  const mapUrl = buildStaticMapUrl(sim, { size: '720x420', zoom: 21 });
+  const mapUrl = buildStaticMapUrl(sim, { size: '720x420', zoom: 20 });
   let mapDataUrl = null;
   let mapErrorMessage = null;
   if (mapUrl) {
@@ -3644,7 +3644,7 @@ function StepRecap({ sim, calcs, profile }) {
   const refConso = numOrNull(sim.annual_consumption_kwh) || calcs.estimatedConsumption;
   const surface = Math.round(finalPanels * 1.95);
   const today = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' });
-  const staticMapUrl = buildStaticMapUrl(sim, { size: '720x420', zoom: 21 });
+  const staticMapUrl = buildStaticMapUrl(sim, { size: '720x420', zoom: 20 });
   // Step 5 target (original commercial target) — shown as a small note if it differs from calepinage
   const targetKwc = sim.final_kwc ?? calcs.recommendedKwc;
   const targetPanels = sim.final_panels ?? calcs.recommendedPanels;
