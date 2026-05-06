@@ -468,8 +468,9 @@ function selectCommercialKwc(rawKwc) {
 function computeAll(sim) {
   const apps = sim.appliances || [];
   const estimatedConsumption = apps.reduce((sum, a) => {
-    const kwh = (Number(a.power) * Number(a.hours) * (Number(a.days_per_week) || 7) * 52) / 1000;
-    return sum + (isNaN(kwh) ? 0 : kwh);
+    const baseKwh = Number(a.kwh_year) || 0;
+    const daysCoef = (Number(a.days_per_week) || 7) / 7;
+    return sum + baseKwh * daysCoef;
   }, 0);
 
   const refConsumption = numOrNull(sim.annual_consumption_kwh) || estimatedConsumption || 0;
@@ -941,6 +942,7 @@ function StepAppliances({ sim, update }) {
         appliances: [...apps, {
           id: Date.now() + Math.random(),
           name: item.name,
+          kwh_year: item.kwh_year,
           power: item.power,
           hours: item.hours,
           days_per_week: 7,
@@ -955,6 +957,7 @@ function StepAppliances({ sim, update }) {
       appliances: [...apps, {
         id: Date.now() + Math.random(),
         name: item.name,
+        kwh_year: item.kwh_year,
         power: item.power,
         hours: item.hours,
         days_per_week: 7,
@@ -971,7 +974,11 @@ function StepAppliances({ sim, update }) {
     update({ appliances: newApps });
   };
 
-  const total = apps.reduce((sum, a) => sum + ((Number(a.power) * Number(a.hours) * (Number(a.days_per_week) || 7) * 52) / 1000), 0);
+  const total = apps.reduce((sum, a) => {
+    const baseKwh = Number(a.kwh_year) || 0;
+    const daysCoef = (Number(a.days_per_week) || 7) / 7;
+    return sum + baseKwh * daysCoef;
+  }, 0);
 
   return (
     <div className="space-y-4">
@@ -1049,7 +1056,9 @@ function StepAppliances({ sim, update }) {
           <CardHeader icon={Settings} title="Paramètres détaillés" subtitle="Affinez la consommation de chaque équipement" />
           <div className="space-y-2">
             {apps.map(a => {
-              const kwh = Math.round((Number(a.power) * Number(a.hours) * (Number(a.days_per_week) || 7) * 52) / 1000);
+              const baseKwh = Number(a.kwh_year) || 0;
+              const daysCoef = (Number(a.days_per_week) || 7) / 7;
+              const kwh = Math.round(baseKwh * daysCoef);
               return (
                 <div key={a.id} className="bg-slate-50 rounded-md p-3 border border-slate-100">
                   <div className="flex items-center justify-between gap-2 mb-2">
@@ -1067,21 +1076,15 @@ function StepAppliances({ sim, update }) {
                       </button>
                     </div>
                   </div>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <label className="block text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-0.5">Watts</label>
-                      <input type="number" value={a.power}
-                        onChange={e => update({ appliances: apps.map(x => x.id === a.id ? { ...x, power: Number(e.target.value) } : x) })}
+                      <label className="block text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-0.5">Conso annuelle (kWh)</label>
+                      <input type="number" value={a.kwh_year}
+                        onChange={e => update({ appliances: apps.map(x => x.id === a.id ? { ...x, kwh_year: Number(e.target.value) } : x) })}
                         className="w-full px-2 py-1.5 text-sm bg-white border border-slate-200 rounded outline-none focus:ring-2 focus:ring-slate-900" />
                     </div>
                     <div>
-                      <label className="block text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-0.5">H/jour</label>
-                      <input type="number" step="0.25" value={a.hours}
-                        onChange={e => update({ appliances: apps.map(x => x.id === a.id ? { ...x, hours: Number(e.target.value) } : x) })}
-                        className="w-full px-2 py-1.5 text-sm bg-white border border-slate-200 rounded outline-none focus:ring-2 focus:ring-slate-900" />
-                    </div>
-                    <div>
-                      <label className="block text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-0.5">J/sem</label>
+                      <label className="block text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-0.5">Jours/semaine</label>
                       <input type="number" max="7" min="1" value={a.days_per_week || 7}
                         onChange={e => update({ appliances: apps.map(x => x.id === a.id ? { ...x, days_per_week: Number(e.target.value) } : x) })}
                         className="w-full px-2 py-1.5 text-sm bg-white border border-slate-200 rounded outline-none focus:ring-2 focus:ring-slate-900" />
