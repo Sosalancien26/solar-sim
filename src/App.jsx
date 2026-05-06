@@ -1217,11 +1217,12 @@ function MainApp({ session, profile, onLogout }) {
               <button
                 onClick={() => {
                   setEligibilityChecking(true);
-                  // Run the simulated verification ~7s then jump to Récap
+                  // Total = sum of per-check durations (~9.1s) + a 700ms hold so the user
+                  // sees the last check turn green before we transition to Récap.
                   setTimeout(() => {
                     setEligibilityChecking(false);
                     setStep(7);
-                  }, 7000);
+                  }, 9800);
                 }}
                 className="flex-1 sm:flex-initial px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md font-bold transition-all flex items-center justify-center gap-1.5 text-sm shadow-sm uppercase tracking-wide"
               >
@@ -2284,24 +2285,30 @@ function Toast({ toast }) {
 // Each check ticks green one after another to feel like a real backend pipeline.
 function EligibilityCheckOverlay({ visible }) {
   const [stepIdx, setStepIdx] = useState(0);
+  // Per-step durations (ms) — eligibility check is intentionally longer for dramatic effect.
   const checks = [
-    'Identification du bâtiment sur l\'imagerie satellite',
-    'Validation de la géométrie du toit',
-    'Vérification du calepinage et de l\'orientation',
-    'Calcul de la production prévisionnelle',
-    'Vérification d\'éligibilité de candidature',
-    'Constitution du dossier d\'études',
+    { label: 'Identification du bâtiment sur l\'imagerie satellite', duration: 1000 },
+    { label: 'Validation de la géométrie du toit', duration: 1000 },
+    { label: 'Vérification du calepinage et de l\'orientation', duration: 1100 },
+    { label: 'Calcul de la production prévisionnelle', duration: 1200 },
+    { label: 'Vérification d\'éligibilité de candidature', duration: 3500 }, // longer pause
+    { label: 'Constitution du dossier d\'études', duration: 1300 },
   ];
 
   useEffect(() => {
     if (!visible) { setStepIdx(0); return; }
-    let i = 0;
-    const id = setInterval(() => {
-      i++;
-      if (i >= checks.length) { clearInterval(id); return; }
-      setStepIdx(i);
-    }, 1100);
-    return () => clearInterval(id);
+    let cancelled = false;
+    let timer = null;
+    const advance = (i) => {
+      if (cancelled || i >= checks.length) return;
+      timer = setTimeout(() => {
+        if (cancelled) return;
+        setStepIdx(i + 1);
+        advance(i + 1);
+      }, checks[i].duration);
+    };
+    advance(0);
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!visible) return null;
@@ -2318,10 +2325,9 @@ function EligibilityCheckOverlay({ visible }) {
         </div>
 
         <div className="bg-slate-800/60 backdrop-blur rounded-xl p-5 border border-slate-700 space-y-3">
-          {checks.map((label, i) => {
+          {checks.map((c, i) => {
             const isDone = i < stepIdx;
             const isActive = i === stepIdx;
-            const isPending = i > stepIdx;
             return (
               <div key={i} className="flex items-center gap-3">
                 <div className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-all ${
@@ -2337,7 +2343,7 @@ function EligibilityCheckOverlay({ visible }) {
                   : isActive ? 'text-white'
                   : 'text-slate-500'
                 }`}>
-                  {label}
+                  {c.label}
                 </div>
               </div>
             );
