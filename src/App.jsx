@@ -1944,13 +1944,14 @@ async function generatePDF(sim, calcs, profile, opts = {}) {
   }
 
   // === HTML BUILD ===
-  // Cleaner, more readable layout with strong visual hierarchy and explicit page breaks.
+  // All rules are scoped to .pdf-doc so they survive being injected as <style> in <head>
+  // and don't leak to the host page. We avoid "body" selectors entirely because the report
+  // is rendered into a <div>, not a <body>.
   const css = `
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: 'Helvetica', 'Arial', sans-serif; color: #0f172a; line-height: 1.5; font-size: 10pt; background: #fff; }
-    .pdf-doc { width: 180mm; margin: 0 auto; padding: 8mm 0; }
-    .pdf-page { padding: 0 4mm; }
-    .pdf-page-break { page-break-before: always; padding-top: 6mm; }
+    .pdf-doc, .pdf-doc * { margin: 0; padding: 0; box-sizing: border-box; }
+    .pdf-doc { font-family: 'Helvetica', 'Arial', sans-serif; color: #0f172a; line-height: 1.5; font-size: 10pt; background: #fff; width: 720px; padding: 28px 24px; }
+    .pdf-page { padding: 0; }
+    .pdf-page-break { page-break-before: always; padding-top: 18px; }
 
     /* Header */
     .pdf-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 14px; border-bottom: 3px solid #0f172a; margin-bottom: 22px; }
@@ -2026,7 +2027,6 @@ async function generatePDF(sim, calcs, profile, opts = {}) {
   `;
 
   const html = `
-<style>${css}</style>
 <div class="pdf-doc">
   <div class="pdf-page">
 
@@ -2194,29 +2194,47 @@ async function generatePDF(sim, calcs, profile, opts = {}) {
   `;
 
   // === RENDER & DOWNLOAD ===
-  // Mount the HTML in a hidden, off-screen container so html2canvas can rasterize it.
-  // Using position:fixed + opacity:0 keeps it from disturbing the visible UI.
+  // Inject CSS into <head> so it definitely applies to the rendered tree, then mount the
+  // markup in a fixed-position off-screen container that html2canvas can rasterize.
+  const styleEl = document.createElement('style');
+  styleEl.setAttribute('data-pdf', 'solar-sim');
+  styleEl.textContent = css;
+  document.head.appendChild(styleEl);
+
   const container = document.createElement('div');
-  container.style.cssText = 'position:fixed;left:-10000px;top:0;width:200mm;background:#fff;z-index:-1;';
+  // Off-screen but with positive top so it's still in the rendering pipeline.
+  container.style.cssText = 'position:fixed;top:0;left:-9999px;width:720px;background:#ffffff;z-index:-1;';
   container.innerHTML = html;
   document.body.appendChild(container);
+
+  // Force a reflow so html2canvas sees fully laid-out content
+  void container.offsetHeight;
 
   try {
     const html2pdf = await loadHtml2pdf();
     await html2pdf().set({
-      margin: [10, 10, 10, 10],
+      margin: [8, 8, 8, 8],
       filename,
       image: { type: 'jpeg', quality: 0.95 },
-      html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false },
+      html2canvas: {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff',
+        logging: false,
+        windowWidth: 720,
+        scrollX: 0,
+        scrollY: 0,
+      },
       jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait', compress: true },
       pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
-    }).from(container).save();
+    }).from(container.firstElementChild).save();
   } catch (e) {
     console.error('PDF generation failed:', e);
     if (opts.onError) opts.onError(e);
     else alert('Erreur lors de la génération du PDF. Vérifiez la console.');
   } finally {
     if (container.parentNode) container.parentNode.removeChild(container);
+    if (styleEl.parentNode) styleEl.parentNode.removeChild(styleEl);
   }
 }
 
