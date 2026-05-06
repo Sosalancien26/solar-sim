@@ -207,21 +207,44 @@ async function apiCall(path, options = {}) {
   throw lastErr || new Error('Network error');
 }
 
-// ============ HTML2PDF LOADER (CDN) ============
-// We load html2pdf lazily on the first PDF generation so it doesn't bloat the initial bundle.
-let _html2pdfLoadPromise = null;
-function loadHtml2pdf() {
+// ============ HTML2CANVAS LOADER (CDN) ============
+// Loaded lazily — only used when capturing the live Google Maps preview for the PDF.
+let _html2canvasLoadPromise = null;
+function loadHtml2canvas() {
   if (typeof window === 'undefined') return Promise.reject(new Error('SSR'));
-  if (window.html2pdf) return Promise.resolve(window.html2pdf);
-  if (_html2pdfLoadPromise) return _html2pdfLoadPromise;
-  _html2pdfLoadPromise = new Promise((resolve, reject) => {
+  if (window.html2canvas) return Promise.resolve(window.html2canvas);
+  if (_html2canvasLoadPromise) return _html2canvasLoadPromise;
+  _html2canvasLoadPromise = new Promise((resolve, reject) => {
     const s = document.createElement('script');
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
-    s.onload = () => resolve(window.html2pdf);
-    s.onerror = () => { _html2pdfLoadPromise = null; reject(new Error('Échec du chargement de html2pdf')); };
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+    s.onload = () => resolve(window.html2canvas);
+    s.onerror = () => { _html2canvasLoadPromise = null; reject(new Error('Échec html2canvas')); };
     document.head.appendChild(s);
   });
-  return _html2pdfLoadPromise;
+  return _html2canvasLoadPromise;
+}
+
+// Capture the live RoofPreviewMap rendered on the Récap page as a JPEG data URL.
+// Returns null if the element isn't on screen or if html2canvas fails (CORS, etc.) —
+// caller falls back to the Static Map URL.
+async function captureLiveRoofMap() {
+  if (typeof document === 'undefined') return null;
+  const target = document.querySelector('[data-pdf-roof-preview]');
+  if (!target) return null;
+  try {
+    const html2canvas = await loadHtml2canvas();
+    const canvas = await html2canvas(target, {
+      useCORS: true,
+      allowTaint: true,
+      backgroundColor: '#e2e8f0',
+      logging: false,
+      scale: 2,
+    });
+    return canvas.toDataURL('image/jpeg', 0.92);
+  } catch (e) {
+    console.warn('Live map capture failed, falling back to Static Maps:', e);
+    return null;
+  }
 }
 
 // ============ GOOGLE MAPS JS API LOADER ============
@@ -1934,13 +1957,15 @@ async function generatePDF(sim, calcs, profile, opts = {}) {
   const safeName = (sim.client_name || 'client').replace(/[^a-z0-9_-]/gi, '_').slice(0, 40);
   const filename = `Etude_PV_${safeName}_${ref}.pdf`;
 
-  // Pre-fetch the satellite map and inline it as a base64 data URL so html2pdf can rasterize it.
-  // Zoom 21 matches the interactive on-screen calepinage view — imagery is more nadir
-  // (less oblique angle) so the flat lat/lng polygons line up properly with the actual roof.
-  const mapUrl = buildStaticMapUrl(sim, { size: '720x420', zoom: 20 });
-  let mapDataUrl = null;
+  // The Récap step renders a live interactive Google Map (RoofPreviewMap) where
+  // panels are properly placed on the rooftop because the JS API compensates for
+  // satellite imagery angle. We capture that DOM element first — if successful, we
+  // get pixel-perfect placement in the PDF. Otherwise fall back to Static Maps API
+  // (which is known to skew panels on tall buildings due to oblique imagery).
+  let mapDataUrl = await captureLiveRoofMap();
   let mapErrorMessage = null;
-  if (mapUrl) {
+  const mapUrl = buildStaticMapUrl(sim, { size: '720x420', zoom: 20 });
+  if (!mapDataUrl && mapUrl) {
     try {
       const res = await fetch(mapUrl);
       if (!res.ok) {
@@ -2369,7 +2394,7 @@ function RoofPreviewMap({ sim, height = 360 }) {
   }
 
   return (
-    <div className="rounded-md overflow-hidden border border-slate-200 bg-slate-100 relative" style={{ height }}>
+    <div data-pdf-roof-preview className="rounded-md overflow-hidden border border-slate-200 bg-slate-100 relative" style={{ height }}>
       <div ref={mapDivRef} className="w-full h-full" />
       {!ready && (
         <div className="absolute inset-0 flex items-center justify-center">
