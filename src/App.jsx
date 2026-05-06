@@ -599,6 +599,8 @@ function MainApp({ session, profile, onLogout }) {
   const [roofFetchStatus, setRoofFetchStatus] = useState('idle'); // 'idle' | 'loading' | 'ready' | 'not_covered' | 'error'
   // PDF generation state — html2pdf.js takes 2-5s so we show a spinner
   const [pdfGenerating, setPdfGenerating] = useState(false);
+  // Eligibility verification overlay (after 'Démarrer' on calepinage step)
+  const [eligibilityChecking, setEligibilityChecking] = useState(false);
 
   // Live errors for the current step (always computed, only shown if step has been attempted)
   const currentStepErrors = useMemo(() => validateStep(step, currentSim), [step, currentSim]);
@@ -1119,6 +1121,7 @@ function MainApp({ session, profile, onLogout }) {
   return (
     <div className="min-h-screen bg-slate-100 pb-32">
       <Toast toast={toast} />
+      <EligibilityCheckOverlay visible={eligibilityChecking} />
       <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 py-3">
           <div className="flex items-center justify-between mb-3 gap-2">
@@ -1210,11 +1213,29 @@ function MainApp({ session, profile, onLogout }) {
             <span className="hidden sm:inline">Précédent</span>
           </button>
           {step < STEPS.length ? (
-            <button onClick={() => tryGoToStep(Math.min(STEPS.length, step + 1))}
-              className="flex-1 sm:flex-initial px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-md font-semibold transition-all flex items-center justify-center gap-1.5 text-sm shadow-sm">
-              Continuer
-              <ChevronRight className="w-4 h-4" />
-            </button>
+            step === 6 ? (
+              <button
+                onClick={() => {
+                  setEligibilityChecking(true);
+                  // Run the simulated verification ~7s then jump to Récap
+                  setTimeout(() => {
+                    setEligibilityChecking(false);
+                    setStep(7);
+                  }, 7000);
+                }}
+                className="flex-1 sm:flex-initial px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md font-bold transition-all flex items-center justify-center gap-1.5 text-sm shadow-sm uppercase tracking-wide"
+              >
+                <Sparkles className="w-4 h-4" />
+                Démarrer la vérification
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            ) : (
+              <button onClick={() => tryGoToStep(Math.min(STEPS.length, step + 1))}
+                className="flex-1 sm:flex-initial px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-md font-semibold transition-all flex items-center justify-center gap-1.5 text-sm shadow-sm">
+                Continuer
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            )
           ) : (
             <button onClick={saveSimulation} disabled={saving}
               className="flex-1 sm:flex-initial px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-md font-semibold transition-all flex items-center justify-center gap-1.5 disabled:opacity-60 text-sm shadow-sm">
@@ -1913,7 +1934,9 @@ async function generatePDF(sim, calcs, profile, opts = {}) {
   const filename = `Etude_PV_${safeName}_${ref}.pdf`;
 
   // Pre-fetch the satellite map and inline it as a base64 data URL so html2pdf can rasterize it.
-  const mapUrl = buildStaticMapUrl(sim, { size: '720x420', zoom: 20 });
+  // Zoom 21 matches the interactive on-screen calepinage view — imagery is more nadir
+  // (less oblique angle) so the flat lat/lng polygons line up properly with the actual roof.
+  const mapUrl = buildStaticMapUrl(sim, { size: '720x420', zoom: 21 });
   let mapDataUrl = null;
   let mapErrorMessage = null;
   if (mapUrl) {
@@ -2053,8 +2076,8 @@ async function generatePDF(sim, calcs, profile, opts = {}) {
       <div class="badge">✓</div>
       <div>
         <div class="lbl">Statut administratif</div>
-        <div class="ttl">Éligible à un montage de candidature</div>
-        <div class="sub">Cette installation répond aux critères techniques pour le dépôt d'un dossier d'aide ou de prime.</div>
+        <div class="ttl">Éligible à la constitution d'un dossier d'études</div>
+        <div class="sub">Cette installation répond aux critères techniques pour la constitution d'un dossier d'études complet.</div>
       </div>
     </div>
 
@@ -2262,6 +2285,82 @@ function Toast({ toast }) {
 
 // Discreet status pill shown on the address card so the commercial knows the satellite analysis
 // is being prepared for the calepinage step.
+// Full-screen overlay shown after the user clicks 'Démarrer la vérification' on step 6.
+// Plays a sequence of fake-progressing checks for ~7 s before MainApp jumps to the Récap.
+// Each check ticks green one after another to feel like a real backend pipeline.
+function EligibilityCheckOverlay({ visible }) {
+  const [stepIdx, setStepIdx] = useState(0);
+  const checks = [
+    'Identification du bâtiment sur l\'imagerie satellite',
+    'Validation de la géométrie du toit',
+    'Vérification du calepinage et de l\'orientation',
+    'Calcul de la production prévisionnelle',
+    'Vérification d\'éligibilité de candidature',
+    'Constitution du dossier d\'études',
+  ];
+
+  useEffect(() => {
+    if (!visible) { setStepIdx(0); return; }
+    let i = 0;
+    const id = setInterval(() => {
+      i++;
+      if (i >= checks.length) { clearInterval(id); return; }
+      setStepIdx(i);
+    }, 1100);
+    return () => clearInterval(id);
+  }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!visible) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-slate-900/95 backdrop-blur-sm flex items-center justify-center p-6">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-8">
+          <div className="inline-flex w-16 h-16 rounded-2xl bg-slate-800 items-center justify-center mb-4 border border-amber-500/30 shadow-2xl">
+            <Sun className="w-8 h-8 text-amber-400 animate-pulse" strokeWidth={2.5} />
+          </div>
+          <h2 className="text-xl sm:text-2xl font-bold text-white mb-1">Vérification en cours</h2>
+          <p className="text-sm text-slate-400">Constitution de votre dossier d'études</p>
+        </div>
+
+        <div className="bg-slate-800/60 backdrop-blur rounded-xl p-5 border border-slate-700 space-y-3">
+          {checks.map((label, i) => {
+            const isDone = i < stepIdx;
+            const isActive = i === stepIdx;
+            const isPending = i > stepIdx;
+            return (
+              <div key={i} className="flex items-center gap-3">
+                <div className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-all ${
+                  isDone ? 'bg-emerald-500'
+                  : isActive ? 'bg-amber-500'
+                  : 'bg-slate-700'
+                }`}>
+                  {isDone && <CheckCircle className="w-4 h-4 text-white" strokeWidth={3} />}
+                  {isActive && <Loader2 className="w-4 h-4 text-white animate-spin" />}
+                </div>
+                <div className={`flex-1 text-sm font-medium transition-colors ${
+                  isDone ? 'text-slate-300'
+                  : isActive ? 'text-white'
+                  : 'text-slate-500'
+                }`}>
+                  {label}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="mt-6 text-center">
+          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-xs font-bold uppercase tracking-widest text-emerald-300">Analyse en cours</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SatelliteAnalysisBadge({ status, hasCoords }) {
   if (!hasCoords && status === 'idle') return null;
   const variants = {
@@ -3551,7 +3650,7 @@ function StepRecap({ sim, calcs, profile }) {
   const refConso = numOrNull(sim.annual_consumption_kwh) || calcs.estimatedConsumption;
   const surface = Math.round(finalPanels * 1.95);
   const today = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' });
-  const staticMapUrl = buildStaticMapUrl(sim, { size: '720x420', zoom: 20 });
+  const staticMapUrl = buildStaticMapUrl(sim, { size: '720x420', zoom: 21 });
   // Step 5 target (original commercial target) — shown as a small note if it differs from calepinage
   const targetKwc = sim.final_kwc ?? calcs.recommendedKwc;
   const targetPanels = sim.final_panels ?? calcs.recommendedPanels;
@@ -3609,10 +3708,10 @@ function StepRecap({ sim, calcs, profile }) {
         <div className="flex-1 min-w-0">
           <div className="text-[10px] font-bold uppercase tracking-widest text-emerald-700 mb-0.5">Statut administratif</div>
           <div className="text-lg sm:text-xl font-extrabold text-emerald-900 leading-tight">
-            Éligible à un montage de candidature
+            Éligible à la constitution d'un dossier d'études
           </div>
           <div className="text-xs text-emerald-700 mt-1">
-            Cette installation répond aux critères techniques pour le dépôt d'un dossier d'aide ou de prime.
+            Cette installation répond aux critères techniques pour la constitution d'un dossier d'études complet.
           </div>
         </div>
       </div>
