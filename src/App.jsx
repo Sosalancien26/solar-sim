@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Sun, Plus, Trash2, Save, FileText, Search, ChevronRight, ChevronLeft, Home, Zap, Settings, CheckCircle, X, Edit, Calculator, Loader2, MapPin, Sparkles, Target, Gauge, Compass, BarChart3, Leaf, Phone, Mail, User, Award, Flame, LogOut, Users, Shield, Download, Eye, EyeOff, UserPlus, Briefcase, TrendingUp } from 'lucide-react';
+import { Sun, Plus, Trash2, Save, FileText, Search, ChevronRight, ChevronLeft, Home, Zap, Settings, CheckCircle, X, Edit, Calculator, Loader2, MapPin, Sparkles, Target, Gauge, Compass, BarChart3, Leaf, Phone, Mail, User, Award, Flame, LogOut, Users, Shield, Download, Eye, EyeOff, UserPlus, Briefcase, TrendingUp, AlertCircle } from 'lucide-react';
 
 const SUPABASE_URL = 'https://yxfanlgklvpdpsrzcoqy.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_SA4vTbf1FfOH2YNHtw3LJg_geqlOxpV';
@@ -117,19 +117,40 @@ const initialSim = {
 
 // ============ HELPERS API ============
 
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Retry with exponential backoff on network errors and 5xx.
+// Auth errors (401/403) and bad-request (4xx) are NOT retried.
 async function apiCall(path, options = {}) {
   const session = JSON.parse(localStorage.getItem('solar_session') || 'null');
   const token = session?.access_token || SUPABASE_KEY;
-  const res = await fetch(`${SUPABASE_URL}${path}`, {
-    ...options,
-    headers: {
-      'apikey': SUPABASE_KEY,
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    },
-  });
-  return res;
+  const headers = {
+    'apikey': SUPABASE_KEY,
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+    ...(options.headers || {}),
+  };
+  const maxAttempts = options.noRetry ? 1 : 3;
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(`${SUPABASE_URL}${path}`, { ...options, headers });
+      // Retry only on transient server errors
+      if (res.status >= 500 && res.status < 600 && attempt < maxAttempts) {
+        await sleep(300 * Math.pow(2, attempt - 1));
+        continue;
+      }
+      return res;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxAttempts) {
+        await sleep(300 * Math.pow(2, attempt - 1)); // 300ms, 600ms, 1200ms
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr || new Error('Network error');
 }
 
 // ============ MAIN APP ============
@@ -317,13 +338,40 @@ function MainApp({ session, profile, onLogout }) {
   const [users, setUsers] = useState([]);
   const [currentSim, setCurrentSim] = useState(initialSim);
   const [step, setStep] = useState(1);
+  const [stepsAttempted, setStepsAttempted] = useState({}); // { [stepId]: true } -> show errors for that step
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCommercial, setFilterCommercial] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
+  const [sortBy, setSortBy] = useState('updated_desc'); // updated_desc | name_asc | kwc_desc | status
+  const [currentPage, setCurrentPage] = useState(1);
+  const PAGE_SIZE = 20;
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState(null);
   const [overrideMode, setOverrideMode] = useState(false);
+  // Autosave state
+  const [isDirty, setIsDirty] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState(null);
+  const [autosaveStatus, setAutosaveStatus] = useState('idle'); // 'idle' | 'pending' | 'saving' | 'saved' | 'error'
+
+  // Live errors for the current step (always computed, only shown if step has been attempted)
+  const currentStepErrors = useMemo(() => validateStep(step, currentSim), [step, currentSim]);
+  const showErrors = !!stepsAttempted[step];
+  const visibleErrors = showErrors ? currentStepErrors : {};
+
+  const tryGoToStep = (target) => {
+    // Going backward: always allow, no validation
+    if (target < step) { setStep(target); return; }
+    // Going forward: validate current step
+    const errs = validateStep(step, currentSim);
+    if (Object.keys(errs).length > 0) {
+      setStepsAttempted(prev => ({ ...prev, [step]: true }));
+      const firstError = Object.values(errs)[0];
+      showToast(firstError, 'error');
+      return;
+    }
+    setStep(target);
+  };
 
   const isManager = profile.role === 'gestionnaire';
 
@@ -332,9 +380,19 @@ function MainApp({ session, profile, onLogout }) {
     if (isManager) loadUsers();
   }, []);
 
-  const showToast = (msg, type = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 2500);
+  const toastTimerRef = useRef(null);
+  const showToast = (msg, type = 'success', opts = {}) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast({ msg, type, action: opts.action || null });
+    const duration = opts.duration || 2500;
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+      if (opts.onTimeout) opts.onTimeout();
+    }, duration);
+  };
+  const dismissToast = () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast(null);
   };
 
   const loadSimulations = async () => {
@@ -355,12 +413,16 @@ function MainApp({ session, profile, onLogout }) {
     } catch (e) { console.error(e); }
   };
 
-  const saveSimulation = async () => {
+  const saveSimulation = async (opts = {}) => {
+    const silent = !!opts.silent;
     if (!currentSim.client_name?.trim()) {
-      showToast('Le nom du client est requis', 'error');
-      setStep(1); return;
+      if (!silent) {
+        showToast('Le nom du client est requis', 'error');
+        setStep(1);
+      }
+      return;
     }
-    setSaving(true);
+    if (silent) setAutosaveStatus('saving'); else setSaving(true);
     try {
       const calcs = computeAll(currentSim);
       const payload = {
@@ -406,22 +468,57 @@ function MainApp({ session, profile, onLogout }) {
       const data = await res.json();
       const saved = Array.isArray(data) ? data[0] : data;
       setCurrentSim({ ...saved, appliances: saved.appliances || [] });
-      showToast(isUpdate ? 'Étude mise à jour' : 'Étude enregistrée');
+      setIsDirty(false);
+      setLastSavedAt(Date.now());
+      if (silent) setAutosaveStatus('saved');
+      else showToast(isUpdate ? 'Étude mise à jour' : 'Étude enregistrée');
       await loadSimulations();
     } catch (e) {
       console.error(e);
-      showToast("Erreur d'enregistrement", 'error');
+      if (silent) setAutosaveStatus('error');
+      else showToast("Erreur d'enregistrement", 'error');
     }
-    setSaving(false);
+    if (silent) {
+      // status 'saved' or 'error' will linger; reset to idle after 3s
+      setTimeout(() => setAutosaveStatus(s => (s === 'saved' || s === 'error') ? 'idle' : s), 3000);
+    } else {
+      setSaving(false);
+    }
   };
 
-  const deleteSimulation = async (id) => {
-    if (!confirm('Supprimer cette étude ?')) return;
-    try {
-      await apiCall(`/rest/v1/solar_simulations?id=eq.${id}`, { method: 'DELETE' });
-      showToast('Étude supprimée');
-      await loadSimulations();
-    } catch (e) { showToast('Erreur de suppression', 'error'); }
+  const deleteSimulation = (id) => {
+    const target = simulations.find(s => s.id === id);
+    if (!target) return;
+    // Optimistic remove from list
+    setSimulations(prev => prev.filter(s => s.id !== id));
+    let undone = false;
+    showToast(`"${target.client_name || 'Étude'}" supprimée`, 'success', {
+      duration: 5000,
+      action: {
+        label: 'Annuler',
+        onClick: () => {
+          undone = true;
+          setSimulations(prev => {
+            // Re-insert at original position (best-effort: prepend)
+            if (prev.find(s => s.id === id)) return prev;
+            return [target, ...prev];
+          });
+          dismissToast();
+        },
+      },
+      onTimeout: async () => {
+        if (undone) return;
+        try {
+          const res = await apiCall(`/rest/v1/solar_simulations?id=eq.${id}`, { method: 'DELETE' });
+          if (!res.ok) throw new Error(await res.text());
+        } catch (e) {
+          console.error(e);
+          // Restore on failure
+          setSimulations(prev => prev.find(s => s.id === id) ? prev : [target, ...prev]);
+          showToast('Erreur de suppression — étude restaurée', 'error');
+        }
+      },
+    });
   };
 
   const newSimulation = () => {
@@ -436,8 +533,38 @@ function MainApp({ session, profile, onLogout }) {
     setView('edit');
   };
 
-  const updateSim = (patch) => setCurrentSim(prev => ({ ...prev, ...patch }));
+  const updateSim = (patch) => {
+    setCurrentSim(prev => ({ ...prev, ...patch }));
+    setIsDirty(true);
+    setAutosaveStatus('pending');
+  };
   const calcs = useMemo(() => computeAll(currentSim), [currentSim]);
+
+  // Autosave: 5s after last edit, only if simulation has a name and we're editing
+  useEffect(() => {
+    if (!isDirty) return;
+    if (view !== 'edit') return;
+    if (!currentSim.client_name?.trim()) return;
+    if (saving || autosaveStatus === 'saving') return;
+    const t = setTimeout(() => { saveSimulation({ silent: true }); }, 5000);
+    return () => clearTimeout(t);
+  }, [isDirty, currentSim, view, saving]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Warn before closing tab if unsaved changes
+  useEffect(() => {
+    if (!isDirty) return;
+    const handler = (e) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [isDirty]);
+
+  // Reset dirty flag when opening/creating a new simulation
+  useEffect(() => {
+    setIsDirty(false);
+    setAutosaveStatus('idle');
+    setLastSavedAt(currentSim.id ? Date.parse(currentSim.updated_at || currentSim.created_at || '') || null : null);
+    setStepsAttempted({});
+  }, [currentSim.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const filteredSims = useMemo(() => {
     let result = simulations;
@@ -452,8 +579,50 @@ function MainApp({ session, profile, onLogout }) {
         s.created_by_name?.toLowerCase().includes(q)
       );
     }
-    return result;
-  }, [simulations, searchQuery, filterCommercial, filterStatus]);
+    // Sort (creates a new array to avoid mutating)
+    const sorted = [...result];
+    if (sortBy === 'name_asc') {
+      sorted.sort((a, b) => (a.client_name || '').localeCompare(b.client_name || '', 'fr'));
+    } else if (sortBy === 'kwc_desc') {
+      sorted.sort((a, b) => (Number(b.final_kwc) || 0) - (Number(a.final_kwc) || 0));
+    } else if (sortBy === 'status') {
+      const order = { brouillon: 0, validé: 1, signé: 2, annulé: 3 };
+      sorted.sort((a, b) => (order[a.status] ?? 99) - (order[b.status] ?? 99));
+    } else {
+      // updated_desc (default)
+      sorted.sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0));
+    }
+    return sorted;
+  }, [simulations, searchQuery, filterCommercial, filterStatus, sortBy]);
+
+  // Reset pagination when filters/sort change
+  useEffect(() => { setCurrentPage(1); }, [searchQuery, filterCommercial, filterStatus, sortBy]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredSims.length / PAGE_SIZE));
+  const pagedSims = useMemo(
+    () => filteredSims.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE),
+    [filteredSims, currentPage]
+  );
+
+  // Quick status update from a sim card (no full reload)
+  const updateSimStatus = async (id, newStatus) => {
+    const previous = simulations;
+    // Optimistic update
+    setSimulations(prev => prev.map(s => s.id === id ? { ...s, status: newStatus, updated_at: new Date().toISOString() } : s));
+    try {
+      const res = await apiCall(`/rest/v1/solar_simulations?id=eq.${id}`, {
+        method: 'PATCH',
+        headers: { 'Prefer': 'return=minimal' },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      showToast('Statut mis à jour');
+    } catch (e) {
+      console.error(e);
+      setSimulations(previous);
+      showToast('Erreur de mise à jour', 'error');
+    }
+  };
 
   if (adminView && isManager) {
     return (
@@ -552,9 +721,20 @@ function MainApp({ session, profile, onLogout }) {
                 <option value="signé">Signé</option>
                 <option value="annulé">Annulé</option>
               </select>
-              {(filterCommercial || filterStatus) && (
+              <select
+                value={sortBy}
+                onChange={e => setSortBy(e.target.value)}
+                className="px-3 py-2 bg-white border border-slate-200 rounded-md text-sm font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-slate-900"
+                title="Trier par"
+              >
+                <option value="updated_desc">↓ Plus récentes</option>
+                <option value="name_asc">A → Z (nom)</option>
+                <option value="kwc_desc">↓ kWc (plus grand)</option>
+                <option value="status">Par statut</option>
+              </select>
+              {(filterCommercial || filterStatus || sortBy !== 'updated_desc') && (
                 <button
-                  onClick={() => { setFilterCommercial(''); setFilterStatus(''); }}
+                  onClick={() => { setFilterCommercial(''); setFilterStatus(''); setSortBy('updated_desc'); }}
                   className="px-3 py-2 bg-white border border-slate-200 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-50 flex items-center gap-1"
                 >
                   <X className="w-3.5 h-3.5" /> Effacer
@@ -564,8 +744,8 @@ function MainApp({ session, profile, onLogout }) {
           </div>
 
           {loading ? (
-            <div className="flex items-center justify-center py-20">
-              <Loader2 className="w-7 h-7 animate-spin text-slate-700" />
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {[...Array(6)].map((_, i) => <SimCardSkeleton key={i} />)}
             </div>
           ) : filteredSims.length === 0 ? (
             <div className="bg-white rounded-lg p-12 text-center border border-slate-200">
@@ -589,17 +769,44 @@ function MainApp({ session, profile, onLogout }) {
               )}
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filteredSims.map(sim => (
-                <SimCard
-                  key={sim.id}
-                  sim={sim}
-                  isManager={isManager}
-                  onOpen={() => openSimulation(sim)}
-                  onDelete={() => deleteSimulation(sim.id)}
-                />
-              ))}
-            </div>
+            <>
+              <div className="text-xs text-slate-500 mb-3 font-medium">
+                {filteredSims.length} étude{filteredSims.length > 1 ? 's' : ''} · page {currentPage}/{totalPages}
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {pagedSims.map(sim => (
+                  <SimCard
+                    key={sim.id}
+                    sim={sim}
+                    isManager={isManager}
+                    onOpen={() => openSimulation(sim)}
+                    onDelete={() => deleteSimulation(sim.id)}
+                    onStatusChange={(newStatus) => updateSimStatus(sim.id, newStatus)}
+                  />
+                ))}
+              </div>
+              {totalPages > 1 && (
+                <div className="flex items-center justify-center gap-2 mt-6">
+                  <button
+                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    disabled={currentPage === 1}
+                    className="px-3 py-2 bg-white border border-slate-200 rounded-md text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40 flex items-center gap-1"
+                  >
+                    <ChevronLeft className="w-4 h-4" /> Précédent
+                  </button>
+                  <span className="text-sm font-semibold text-slate-700 px-3">
+                    {currentPage} / {totalPages}
+                  </span>
+                  <button
+                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                    disabled={currentPage === totalPages}
+                    className="px-3 py-2 bg-white border border-slate-200 rounded-md text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40 flex items-center gap-1"
+                  >
+                    Suivant <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </main>
 
@@ -628,6 +835,7 @@ function MainApp({ session, profile, onLogout }) {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <SaveBadge dirty={isDirty} status={autosaveStatus} lastSavedAt={lastSavedAt} />
               {currentSim.id && step === 6 && (
                 <button
                   onClick={() => generatePDF(currentSim, calcs, profile)}
@@ -637,7 +845,7 @@ function MainApp({ session, profile, onLogout }) {
                   <span className="hidden sm:inline">PDF</span>
                 </button>
               )}
-              <button onClick={saveSimulation} disabled={saving}
+              <button onClick={() => saveSimulation()} disabled={saving}
                 className="bg-slate-900 hover:bg-slate-800 text-white px-3 py-2 rounded-md font-semibold flex items-center gap-1.5 transition-all disabled:opacity-60 text-sm shadow-sm">
                 {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                 <span className="hidden sm:inline">Enregistrer</span>
@@ -647,8 +855,8 @@ function MainApp({ session, profile, onLogout }) {
 
           <div className="relative pt-2">
             <div className="absolute top-[18px] left-4 right-4 h-0.5 bg-slate-200">
-              <div className="h-full bg-slate-900 transition-all duration-500"
-                style={{ width: `${((step - 1) / (STEPS.length - 1)) * 100}%` }} />
+              <div className="h-full bg-gradient-to-r from-slate-900 to-amber-500 transition-all duration-500"
+                style={{ width: `${overallProgress(currentSim)}%` }} />
             </div>
             <div className="relative flex items-start justify-between">
               {STEPS.map((s) => {
@@ -656,7 +864,7 @@ function MainApp({ session, profile, onLogout }) {
                 const isActive = step === s.id;
                 const isDone = step > s.id;
                 return (
-                  <button key={s.id} onClick={() => setStep(s.id)}
+                  <button key={s.id} onClick={() => tryGoToStep(s.id)}
                     className="flex flex-col items-center gap-1.5 group">
                     <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${
                       isActive ? 'bg-slate-900 text-amber-400 ring-4 ring-amber-100'
@@ -677,21 +885,21 @@ function MainApp({ session, profile, onLogout }) {
       </header>
 
       <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
-        {step === 1 && <StepClient sim={currentSim} update={updateSim} showToast={showToast} />}
-        {step === 2 && <StepHousing sim={currentSim} update={updateSim} />}
+        {step === 1 && <StepClient sim={currentSim} update={updateSim} showToast={showToast} errors={visibleErrors} />}
+        {step === 2 && <StepHousing sim={currentSim} update={updateSim} errors={visibleErrors} />}
         {step === 3 && <StepAppliances sim={currentSim} update={updateSim} />}
         {step === 4 && <StepConsumption sim={currentSim} update={updateSim} calcs={calcs} />}
         {step === 5 && <StepSizing sim={currentSim} update={updateSim} calcs={calcs} overrideMode={overrideMode} setOverrideMode={setOverrideMode} />}
         {step === 6 && <StepRecap sim={currentSim} calcs={calcs} profile={profile} />}
 
         <div className="flex items-center justify-between mt-8 gap-3">
-          <button onClick={() => setStep(Math.max(1, step - 1))} disabled={step === 1}
+          <button onClick={() => tryGoToStep(Math.max(1, step - 1))} disabled={step === 1}
             className="px-4 py-2.5 bg-white border border-slate-200 rounded-md font-semibold text-slate-700 disabled:opacity-40 hover:bg-slate-50 transition-all flex items-center gap-1.5 text-sm">
             <ChevronLeft className="w-4 h-4" />
             <span className="hidden sm:inline">Précédent</span>
           </button>
           {step < STEPS.length ? (
-            <button onClick={() => setStep(Math.min(STEPS.length, step + 1))}
+            <button onClick={() => tryGoToStep(Math.min(STEPS.length, step + 1))}
               className="flex-1 sm:flex-initial px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-md font-semibold transition-all flex items-center justify-center gap-1.5 text-sm shadow-sm">
               Continuer
               <ChevronRight className="w-4 h-4" />
@@ -1237,6 +1445,82 @@ function intOrNull(v) {
   const n = numOrNull(v); return n === null ? null : Math.round(n);
 }
 
+// ============ VALIDATION ============
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PHONE_RE = /^(?:(?:\+|00)33|0)\s*[1-9](?:[\s.-]*\d{2}){4}$/;
+const POSTAL_RE = /^\d{5}$/;
+
+// Per-step completion percentage (0-100), based on filled fields
+function stepCompletion(step, sim) {
+  if (step === 1) {
+    let pts = 0, max = 5;
+    if (sim.client_name?.trim()) pts += 2; // weight 2
+    if (sim.client_phone?.trim()) pts += 1;
+    if (sim.client_email?.trim()) pts += 1;
+    if (sim.client_address?.trim() || sim.client_postal_code?.trim()) pts += 1;
+    return Math.round((pts / max) * 100);
+  }
+  if (step === 2) {
+    let pts = 0, max = 6;
+    if (numOrNull(sim.surface_m2)) pts += 2;
+    if (intOrNull(sim.occupants)) pts += 2;
+    if (sim.region) pts += 1;
+    if (sim.roof_orientation) pts += 0.5;
+    if (Number(sim.roof_inclination) > 0) pts += 0.5;
+    return Math.round((pts / max) * 100);
+  }
+  if (step === 3) {
+    return (sim.appliances || []).length > 0 ? 100 : 0;
+  }
+  if (step === 4) {
+    const hasApps = (sim.appliances || []).length > 0;
+    const hasManual = numOrNull(sim.annual_consumption_kwh) > 0;
+    return (hasApps || hasManual) ? 100 : 0;
+  }
+  if (step === 5) {
+    return sim.final_kwc != null ? 100 : 50;
+  }
+  if (step === 6) {
+    return 100;
+  }
+  return 0;
+}
+
+function overallProgress(sim) {
+  const total = [1,2,3,4,5,6].reduce((sum, s) => sum + stepCompletion(s, sim), 0);
+  return Math.round(total / 6);
+}
+
+function validateStep(step, sim) {
+  const e = {};
+  if (step === 1) {
+    if (!sim.client_name?.trim()) e.client_name = 'Le nom du client est requis';
+    else if (sim.client_name.trim().length < 2) e.client_name = 'Nom trop court';
+    if (sim.client_email && !EMAIL_RE.test(sim.client_email.trim())) e.client_email = 'Format email invalide';
+    if (sim.client_phone && !PHONE_RE.test(sim.client_phone.trim())) e.client_phone = 'Format téléphone invalide (ex: 06 12 34 56 78)';
+    if (sim.client_postal_code && !POSTAL_RE.test(sim.client_postal_code.trim())) e.client_postal_code = 'Code postal: 5 chiffres';
+  } else if (step === 2) {
+    const surface = numOrNull(sim.surface_m2);
+    if (surface === null) e.surface_m2 = 'Surface requise';
+    else if (surface <= 0 || surface > 1000) e.surface_m2 = 'Entre 1 et 1000 m²';
+    const occupants = intOrNull(sim.occupants);
+    if (occupants === null) e.occupants = 'Nombre d\'occupants requis';
+    else if (occupants < 1 || occupants > 20) e.occupants = 'Entre 1 et 20 personnes';
+    const incl = Number(sim.roof_inclination);
+    if (isNaN(incl) || incl < 0 || incl > 90) e.roof_inclination = 'Inclinaison entre 0° et 90°';
+  } else if (step === 4) {
+    const apps = sim.appliances || [];
+    const conso = numOrNull(sim.annual_consumption_kwh);
+    if (apps.length === 0 && (conso === null || conso <= 0)) {
+      e.annual_consumption_kwh = 'Sélectionnez des appareils ou saisissez une consommation manuelle';
+    } else if (conso !== null && conso < 0) {
+      e.annual_consumption_kwh = 'La consommation doit être positive';
+    }
+  }
+  return e;
+}
+
 function selectCommercialKwc(rawKwc) {
   if (rawKwc <= 3.5) return 3.5;
   if (rawKwc >= 9) return 9.0;
@@ -1505,13 +1789,76 @@ ${sim.notes ? `
 function Toast({ toast }) {
   if (!toast) return null;
   return (
-    <div className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-md shadow-xl text-white font-semibold flex items-center gap-2 text-sm ${
+    <div className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-md shadow-xl text-white font-semibold flex items-center gap-3 text-sm ${
       toast.type === 'error' ? 'bg-red-600' : 'bg-slate-900'
     }`}>
-      {toast.type === 'error' ? <X className="w-4 h-4" /> : <CheckCircle className="w-4 h-4 text-amber-400" />}
-      {toast.msg}
+      {toast.type === 'error' ? <X className="w-4 h-4 flex-shrink-0" /> : <CheckCircle className="w-4 h-4 text-amber-400 flex-shrink-0" />}
+      <span>{toast.msg}</span>
+      {toast.action && (
+        <button
+          onClick={toast.action.onClick}
+          className="ml-2 px-2.5 py-1 bg-white/15 hover:bg-white/25 rounded text-xs font-bold uppercase tracking-wider transition-colors"
+        >
+          {toast.action.label}
+        </button>
+      )}
     </div>
   );
+}
+
+function SaveBadge({ dirty, status, lastSavedAt }) {
+  // Live timer: re-render every 30s to refresh "il y a Xs"
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!lastSavedAt) return;
+    const id = setInterval(() => setTick(t => t + 1), 30000);
+    return () => clearInterval(id);
+  }, [lastSavedAt]);
+
+  const formatAgo = (ts) => {
+    if (!ts) return '';
+    const sec = Math.max(0, Math.round((Date.now() - ts) / 1000));
+    if (sec < 5) return "à l'instant";
+    if (sec < 60) return `il y a ${sec}s`;
+    const min = Math.round(sec / 60);
+    if (min < 60) return `il y a ${min} min`;
+    const h = Math.round(min / 60);
+    return `il y a ${h}h`;
+  };
+
+  if (status === 'saving') {
+    return (
+      <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 px-2">
+        <Loader2 className="w-3 h-3 animate-spin" />
+        Enregistrement…
+      </span>
+    );
+  }
+  if (dirty || status === 'pending') {
+    return (
+      <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-md">
+        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+        Modifié
+      </span>
+    );
+  }
+  if (status === 'error') {
+    return (
+      <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-red-700 bg-red-50 border border-red-200 px-2 py-1 rounded-md">
+        <AlertCircle className="w-3 h-3" />
+        Échec autosave
+      </span>
+    );
+  }
+  if (lastSavedAt) {
+    return (
+      <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 px-2">
+        <CheckCircle className="w-3 h-3" />
+        Enregistré {formatAgo(lastSavedAt)}
+      </span>
+    );
+  }
+  return null;
 }
 
 function StatBubble({ label, value, icon: Icon, accent }) {
@@ -1526,7 +1873,26 @@ function StatBubble({ label, value, icon: Icon, accent }) {
   );
 }
 
-function SimCard({ sim, isManager, onOpen, onDelete }) {
+function SimCardSkeleton() {
+  return (
+    <div className="bg-white rounded-lg p-5 border border-slate-200 animate-pulse">
+      <div className="flex items-start justify-between mb-3 gap-2">
+        <div className="flex-1 space-y-2">
+          <div className="h-4 bg-slate-200 rounded w-3/4" />
+          <div className="h-3 bg-slate-100 rounded w-1/2" />
+        </div>
+        <div className="w-16 h-5 bg-slate-200 rounded" />
+      </div>
+      <div className="grid grid-cols-2 gap-2 mb-4">
+        <div className="bg-slate-50 rounded-md p-3 h-16" />
+        <div className="bg-slate-50 rounded-md p-3 h-16" />
+      </div>
+      <div className="h-9 bg-slate-100 rounded-md" />
+    </div>
+  );
+}
+
+const SimCard = React.memo(function SimCard({ sim, isManager, onOpen, onDelete, onStatusChange }) {
   const statusConfig = {
     'brouillon': { bg: 'bg-slate-100', text: 'text-slate-700', dot: 'bg-slate-400' },
     'validé': { bg: 'bg-blue-50', text: 'text-blue-700', dot: 'bg-blue-500' },
@@ -1537,7 +1903,7 @@ function SimCard({ sim, isManager, onOpen, onDelete }) {
 
   return (
     <div className="bg-white rounded-lg p-5 border border-slate-200 hover:border-slate-400 hover:shadow-md transition-all group">
-      <div className="flex items-start justify-between mb-3">
+      <div className="flex items-start justify-between mb-3 gap-2">
         <div className="flex-1 min-w-0">
           <h3 className="font-bold text-slate-900 truncate">{sim.client_name || 'Sans nom'}</h3>
           <p className="text-xs text-slate-500 truncate flex items-center gap-1 mt-1">
@@ -1545,10 +1911,29 @@ function SimCard({ sim, isManager, onOpen, onDelete }) {
             {sim.client_city || sim.client_postal_code || sim.region || '—'}
           </p>
         </div>
-        <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${cfg.bg} ${cfg.text} flex items-center gap-1.5 flex-shrink-0`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />
-          {sim.status || 'brouillon'}
-        </span>
+        {onStatusChange ? (
+          <div className="relative flex-shrink-0">
+            <select
+              value={sim.status || 'brouillon'}
+              onChange={e => { e.stopPropagation(); onStatusChange(e.target.value); }}
+              onClick={e => e.stopPropagation()}
+              title="Changer le statut"
+              className={`appearance-none cursor-pointer pl-5 pr-6 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${cfg.bg} ${cfg.text} border-0 outline-none focus:ring-2 focus:ring-slate-900`}
+            >
+              <option value="brouillon">Brouillon</option>
+              <option value="validé">Validé</option>
+              <option value="signé">Signé</option>
+              <option value="annulé">Annulé</option>
+            </select>
+            <span className={`pointer-events-none w-1.5 h-1.5 rounded-full ${cfg.dot} absolute left-2 top-1/2 -translate-y-1/2`} />
+            <ChevronRight className={`pointer-events-none w-3 h-3 absolute right-1 top-1/2 -translate-y-1/2 rotate-90 ${cfg.text}`} />
+          </div>
+        ) : (
+          <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${cfg.bg} ${cfg.text} flex items-center gap-1.5 flex-shrink-0`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />
+            {sim.status || 'brouillon'}
+          </span>
+        )}
       </div>
 
       {isManager && sim.created_by_name && (
@@ -1596,7 +1981,7 @@ function SimCard({ sim, isManager, onOpen, onDelete }) {
       </div>
     </div>
   );
-}
+});
 
 function Card({ children, className = '' }) {
   return (
@@ -1621,29 +2006,49 @@ function CardHeader({ icon: Icon, title, subtitle, num }) {
   );
 }
 
-function Field({ label, children, className = '', hint }) {
+function Field({ label, children, className = '', hint, error, required }) {
   return (
     <div className={className}>
-      <label className="block text-[11px] font-bold text-slate-700 mb-1.5 uppercase tracking-widest">{label}</label>
+      {label && (
+        <label className="block text-[11px] font-bold text-slate-700 mb-1.5 uppercase tracking-widest">
+          {label}
+          {required && <span className="text-red-500 ml-1 normal-case">*</span>}
+        </label>
+      )}
       {children}
-      {hint && <p className="text-xs text-slate-400 mt-1.5">{hint}</p>}
+      {error ? (
+        <p className="text-xs text-red-600 mt-1.5 flex items-start gap-1 font-medium">
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />
+          <span>{error}</span>
+        </p>
+      ) : hint ? (
+        <p className="text-xs text-slate-400 mt-1.5">{hint}</p>
+      ) : null}
     </div>
   );
 }
 
 function Input(props) {
-  const { className, ...rest } = props;
+  const { className, error, ...rest } = props;
+  const borderClasses = error
+    ? 'border-red-400 focus:ring-red-500 bg-red-50/30'
+    : 'border-slate-200 focus:ring-slate-900';
   return (
     <input {...rest}
-      className={`w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-md focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all text-slate-900 placeholder:text-slate-400 text-sm ${className || ''}`}
+      aria-invalid={error ? 'true' : undefined}
+      className={`w-full px-3.5 py-2.5 bg-white border rounded-md focus:ring-2 focus:border-transparent outline-none transition-all text-slate-900 placeholder:text-slate-400 text-sm ${borderClasses} ${className || ''}`}
     />
   );
 }
 
-function Select({ children, className, ...rest }) {
+function Select({ children, className, error, ...rest }) {
+  const borderClasses = error
+    ? 'border-red-400 focus:ring-red-500 bg-red-50/30'
+    : 'border-slate-200 focus:ring-slate-900';
   return (
     <select {...rest}
-      className={`w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-md focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all appearance-none text-slate-900 text-sm ${className || ''}`}
+      aria-invalid={error ? 'true' : undefined}
+      className={`w-full px-3.5 py-2.5 bg-white border rounded-md focus:ring-2 focus:border-transparent outline-none transition-all appearance-none text-slate-900 text-sm ${borderClasses} ${className || ''}`}
       style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%2712%27 viewBox=%270 0 12 12%27%3E%3Cpath fill=%27%2364748b%27 d=%27M3 4l3 3 3-3z%27/%3E%3C/svg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px' }}
     >
       {children}
@@ -1653,7 +2058,11 @@ function Select({ children, className, ...rest }) {
 
 // ============ STEPS ============
 
-function StepClient({ sim, update, showToast }) {
+// Module-level cache shared across all StepClient renders. Survives step navigation, cleared on reload.
+const ADDRESS_CACHE = new Map(); // key: normalized query, value: features[]
+const ADDRESS_CACHE_MAX = 50;
+
+function StepClient({ sim, update, showToast, errors = {} }) {
   const [searching, setSearching] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
   const [showSuggest, setShowSuggest] = useState(false);
@@ -1662,16 +2071,31 @@ function StepClient({ sim, update, showToast }) {
   const searchAddress = (query) => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (!query || query.length < 3) { setSuggestions([]); setShowSuggest(false); return; }
+    const key = query.trim().toLowerCase();
+    // Cache hit -> instant render, skip debounce
+    if (ADDRESS_CACHE.has(key)) {
+      setSuggestions(ADDRESS_CACHE.get(key));
+      setShowSuggest(true);
+      setSearching(false);
+      return;
+    }
     debounceRef.current = setTimeout(async () => {
       setSearching(true);
       try {
         const res = await fetch(`https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(query)}&limit=5`);
         const data = await res.json();
-        setSuggestions(data.features || []);
+        const features = data.features || [];
+        // Save in cache (LRU eviction when full)
+        if (ADDRESS_CACHE.size >= ADDRESS_CACHE_MAX) {
+          const firstKey = ADDRESS_CACHE.keys().next().value;
+          ADDRESS_CACHE.delete(firstKey);
+        }
+        ADDRESS_CACHE.set(key, features);
+        setSuggestions(features);
         setShowSuggest(true);
       } catch (e) { setSuggestions([]); }
       setSearching(false);
-    }, 300);
+    }, 500);
   };
 
   const selectAddress = (feature) => {
@@ -1694,19 +2118,19 @@ function StepClient({ sim, update, showToast }) {
       <Card>
         <CardHeader icon={User} title="Informations client" subtitle="Coordonnées du prospect" num="01" />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Field label="Nom complet *" className="sm:col-span-2">
-            <Input value={sim.client_name} onChange={e => update({ client_name: e.target.value })} placeholder="Jean Dupont" />
+          <Field label="Nom complet" required className="sm:col-span-2" error={errors.client_name}>
+            <Input value={sim.client_name} onChange={e => update({ client_name: e.target.value })} placeholder="Jean Dupont" error={errors.client_name} />
           </Field>
-          <Field label="Téléphone">
+          <Field label="Téléphone" error={errors.client_phone}>
             <div className="relative">
               <Phone className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <Input value={sim.client_phone} onChange={e => update({ client_phone: e.target.value })} placeholder="06 12 34 56 78" className="pl-9" />
+              <Input value={sim.client_phone} onChange={e => update({ client_phone: e.target.value })} placeholder="06 12 34 56 78" className="pl-9" error={errors.client_phone} />
             </div>
           </Field>
-          <Field label="Email">
+          <Field label="Email" error={errors.client_email}>
             <div className="relative">
               <Mail className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <Input value={sim.client_email} onChange={e => update({ client_email: e.target.value })} placeholder="email@exemple.fr" type="email" className="pl-9" />
+              <Input value={sim.client_email} onChange={e => update({ client_email: e.target.value })} placeholder="email@exemple.fr" type="email" className="pl-9" error={errors.client_email} />
             </div>
           </Field>
         </div>
@@ -1744,8 +2168,8 @@ function StepClient({ sim, update, showToast }) {
             </div>
           </Field>
           <div className="grid grid-cols-3 gap-3">
-            <Field label="Code postal">
-              <Input value={sim.client_postal_code || ''} onChange={e => {
+            <Field label="Code postal" error={errors.client_postal_code}>
+              <Input value={sim.client_postal_code || ''} error={errors.client_postal_code} onChange={e => {
                 const cp = e.target.value;
                 update({ client_postal_code: cp });
                 if (cp.length >= 2) {
@@ -1779,7 +2203,7 @@ function StepClient({ sim, update, showToast }) {
   );
 }
 
-function StepHousing({ sim, update }) {
+function StepHousing({ sim, update, errors = {} }) {
   const orientations = [
     { val: 'Sud', emoji: '⬇', score: 100 },
     { val: 'Sud-Est', emoji: '↙', score: 95 },
@@ -1804,14 +2228,14 @@ function StepHousing({ sim, update }) {
               ))}
             </div>
           </Field>
-          <Field label="Surface habitable (m²)">
-            <Input type="number" value={sim.surface_m2} onChange={e => update({ surface_m2: e.target.value })} placeholder="120" />
+          <Field label="Surface habitable (m²)" required error={errors.surface_m2}>
+            <Input type="number" value={sim.surface_m2} onChange={e => update({ surface_m2: e.target.value })} placeholder="120" error={errors.surface_m2} />
           </Field>
-          <Field label="Nombre d'occupants">
+          <Field label="Nombre d'occupants" required error={errors.occupants}>
             <div className="flex items-center gap-2">
               <button onClick={() => update({ occupants: Math.max(1, (Number(sim.occupants) || 1) - 1) })}
                 className="w-10 h-10 rounded-md bg-white border border-slate-200 hover:bg-slate-50 font-bold text-lg text-slate-700">−</button>
-              <Input type="number" value={sim.occupants} onChange={e => update({ occupants: e.target.value })} placeholder="4" className="text-center font-bold" />
+              <Input type="number" value={sim.occupants} onChange={e => update({ occupants: e.target.value })} placeholder="4" className="text-center font-bold" error={errors.occupants} />
               <button onClick={() => update({ occupants: (Number(sim.occupants) || 0) + 1 })}
                 className="w-10 h-10 rounded-md bg-white border border-slate-200 hover:bg-slate-50 font-bold text-lg text-slate-700">+</button>
             </div>
@@ -1856,7 +2280,28 @@ function StepHousing({ sim, update }) {
             ))}
           </div>
         </Field>
-        <Field label={`Inclinaison : ${sim.roof_inclination}°`} className="mt-4">
+        <Field label={`Inclinaison : ${sim.roof_inclination}°`} className="mt-4" error={errors.roof_inclination}>
+          <div className="grid grid-cols-5 gap-1.5 mb-3">
+            {[
+              { val: 0, label: 'Plat', sub: '0°' },
+              { val: 15, label: 'Faible', sub: '15°' },
+              { val: 30, label: 'Standard', sub: '30°' },
+              { val: 35, label: 'Optimal', sub: '35°' },
+              { val: 45, label: 'Forte', sub: '45°' },
+            ].map(p => {
+              const active = Number(sim.roof_inclination) === p.val;
+              return (
+                <button
+                  key={p.val}
+                  onClick={() => update({ roof_inclination: p.val })}
+                  className={`p-2 rounded-md border text-center transition-all ${active ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white hover:border-slate-400 text-slate-700'}`}
+                >
+                  <div className="text-xs font-bold">{p.label}</div>
+                  <div className={`text-[10px] mt-0.5 ${active ? 'text-amber-400' : 'text-slate-500'}`}>{p.sub}</div>
+                </button>
+              );
+            })}
+          </div>
           <input type="range" min="0" max="60" value={sim.roof_inclination}
             onChange={e => update({ roof_inclination: Number(e.target.value) })}
             className="w-full h-1.5 bg-slate-200 rounded-full appearance-none cursor-pointer accent-slate-900" />
@@ -1874,6 +2319,22 @@ function StepHousing({ sim, update }) {
 function StepAppliances({ sim, update }) {
   const apps = sim.appliances || [];
   const [activeCategory, setActiveCategory] = useState('cuisine');
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Build search results across all categories when user types
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return null;
+    const matches = [];
+    APPLIANCE_CATEGORIES.forEach(cat => {
+      cat.items.forEach(item => {
+        if (item.name.toLowerCase().includes(q)) {
+          matches.push({ item, category: cat });
+        }
+      });
+    });
+    return matches;
+  }, [searchQuery]);
 
   const getQuantity = (name) => apps.filter(a => a.name === name).length;
   const isSelected = (name) => getQuantity(name) > 0;
@@ -1923,26 +2384,50 @@ function StepAppliances({ sim, update }) {
           </div>
         </div>
 
-        <div className="flex gap-1.5 overflow-x-auto pb-2 -mx-1 px-1 mb-4">
-          {APPLIANCE_CATEGORIES.map(cat => (
-            <button key={cat.id} onClick={() => setActiveCategory(cat.id)}
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-bold whitespace-nowrap transition-all ${activeCategory === cat.id ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
-              <span>{cat.emoji}</span>{cat.label}
+        <div className="relative mb-3">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+            placeholder="Rechercher un appareil (frigo, voiture, piscine...)"
+            className="w-full pl-9 pr-9 py-2 bg-white border border-slate-200 rounded-md focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none text-sm"
+          />
+          {searchQuery && (
+            <button onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700">
+              <X className="w-4 h-4" />
             </button>
-          ))}
+          )}
         </div>
 
+        {!searchQuery && (
+          <div className="flex gap-1.5 overflow-x-auto pb-2 -mx-1 px-1 mb-4">
+            {APPLIANCE_CATEGORIES.map(cat => (
+              <button key={cat.id} onClick={() => setActiveCategory(cat.id)}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-bold whitespace-nowrap transition-all ${activeCategory === cat.id ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+                <span>{cat.emoji}</span>{cat.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {searchQuery && searchResults && searchResults.length === 0 && (
+          <div className="text-center py-8 text-sm text-slate-500">
+            Aucun appareil pour « {searchQuery} »
+          </div>
+        )}
+
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
-          {APPLIANCE_CATEGORIES.find(c => c.id === activeCategory)?.items.map((item, i) => {
+          {(searchQuery ? (searchResults || []).map(r => r.item) : (APPLIANCE_CATEGORIES.find(c => c.id === activeCategory)?.items || [])).map((item, i) => {
             const selected = isSelected(item.name);
             const qty = getQuantity(item.name);
+            const matchCat = searchQuery ? searchResults.find(r => r.item === item)?.category : null;
             return (
-              <button key={i} onClick={() => toggleAppliance(item)}
+              <button key={`${item.name}-${i}`} onClick={() => toggleAppliance(item)}
                 className={`relative p-3 rounded-md border transition-all text-left ${selected ? 'border-slate-900 bg-slate-50' : 'border-slate-200 bg-white hover:border-slate-400'}`}>
                 {selected && <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-slate-900 flex items-center justify-center"><CheckCircle className="w-3.5 h-3.5 text-amber-400" /></div>}
                 <div className="text-3xl mb-1.5">{item.emoji}</div>
                 <div className="text-xs font-bold text-slate-900 mb-0.5 leading-tight">{item.name}</div>
                 <div className="text-[10px] text-slate-500">{item.kwh_year} kWh/an</div>
+                {matchCat && <div className="text-[9px] text-slate-400 mt-1 font-semibold uppercase tracking-wider">{matchCat.emoji} {matchCat.label}</div>}
                 {qty > 1 && <div className="absolute bottom-1.5 right-1.5 w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center">×{qty}</div>}
                 {selected && (
                   <div className="mt-2 flex items-center gap-1">
