@@ -2246,22 +2246,53 @@ async function generatePDF(sim, calcs, profile, opts = {}) {
     alert('Le navigateur a bloqué la fenêtre. Autorisez les popups pour cette page.');
     return;
   }
+  // Sticky toolbar with explicit "Retour" + "Télécharger" buttons so mobile users aren't
+  // stuck on the print page. Hidden during the actual print via @media print.
+  const toolbar = `
+    <div class="pdf-toolbar">
+      <button onclick="history.length > 1 ? history.back() : window.close()" class="pdf-tb-back">
+        ← Retour
+      </button>
+      <div class="pdf-tb-title">Aperçu — ${(sim.client_name || 'Étude').replace(/[<>&"']/g, '')}</div>
+      <button onclick="window.print()" class="pdf-tb-print">⬇ Télécharger PDF</button>
+    </div>
+  `;
+  // Detect mobile to skip the auto-print pop (iOS Safari behaves badly with auto-trigger,
+  // we'd rather the user tap the explicit button).
+  const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
   win.document.write(`<!doctype html><html lang="fr"><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${filename.replace(/\\.pdf$/, '')}</title>
     <style>
       @page { size: A4; margin: 12mm; }
-      html, body { margin: 0; padding: 0; background: #fff; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+      html, body { margin: 0; padding: 0; background: #f1f5f9; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
       body { font-family: 'Helvetica', 'Arial', sans-serif; }
+      .pdf-toolbar { position: sticky; top: 0; z-index: 50; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; background: #0f172a; color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
+      .pdf-toolbar button { border: none; cursor: pointer; font-weight: 700; font-size: 13px; border-radius: 6px; padding: 8px 14px; transition: background 0.15s; }
+      .pdf-tb-back { background: rgba(255,255,255,0.12); color: #fff; }
+      .pdf-tb-back:hover { background: rgba(255,255,255,0.22); }
+      .pdf-tb-print { background: #fbbf24; color: #0f172a; }
+      .pdf-tb-print:hover { background: #f59e0b; }
+      .pdf-tb-title { flex: 1; text-align: center; font-size: 13px; font-weight: 600; opacity: 0.85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pdf-doc-wrap { padding: 16px; max-width: 800px; margin: 0 auto; }
+      .pdf-doc { box-shadow: 0 6px 24px rgba(15,23,42,0.12); border-radius: 8px; }
       ${css}
       @media print {
-        .pdf-doc { width: 100% !important; padding: 0 !important; }
+        html, body { background: #fff !important; }
+        .pdf-toolbar { display: none !important; }
+        .pdf-doc-wrap { padding: 0 !important; max-width: none !important; margin: 0 !important; }
+        .pdf-doc { box-shadow: none !important; border-radius: 0 !important; width: 100% !important; padding: 0 !important; }
       }
     </style>
-    </head><body>${html}</body></html>`);
+    </head><body>
+      ${toolbar}
+      <div class="pdf-doc-wrap">${html}</div>
+    </body></html>`);
   win.document.close();
 
-  // Wait for layout + image to settle before opening the print dialog.
+  // Auto-trigger print on desktop only — on mobile we let the user tap "Télécharger PDF".
   win.onload = () => {
+    if (isMobile) return; // user-driven on mobile
     const images = Array.from(win.document.images || []);
     const fire = () => setTimeout(() => { try { win.focus(); win.print(); } catch {} }, 250);
     if (images.length === 0) { fire(); return; }
