@@ -761,37 +761,81 @@ function MainApp({ session, profile, onLogout }) {
     }
   };
 
+  // Pending deletes — independent of the toast timer so a subsequent toast can't
+  // accidentally cancel them. Map of id -> { timer, target }.
+  const pendingDeletesRef = useRef(new Map());
+
+  // Sends pending DELETEs immediately. Called from beforeunload so we don't lose
+  // a delete the user requested but the 5 s timer hadn't elapsed for.
+  const flushPendingDeletes = () => {
+    pendingDeletesRef.current.forEach(({ timer }, id) => {
+      clearTimeout(timer);
+      // sendBeacon is fire-and-forget but reliably delivers even during unload.
+      // We can't add an Authorization header on a Beacon, so we use fetch with keepalive
+      // which IS allowed to set custom headers and survives navigation.
+      const session = JSON.parse(localStorage.getItem('solar_session') || 'null');
+      const token = session?.access_token || SUPABASE_KEY;
+      try {
+        fetch(`${SUPABASE_URL}/rest/v1/solar_simulations?id=eq.${id}`, {
+          method: 'DELETE',
+          headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${token}` },
+          keepalive: true,
+        });
+      } catch {}
+    });
+    pendingDeletesRef.current.clear();
+  };
+
+  // Beforeunload guard: flush all pending deletes when the tab is closing.
+  useEffect(() => {
+    const handler = () => flushPendingDeletes();
+    window.addEventListener('beforeunload', handler);
+    window.addEventListener('pagehide', handler);
+    return () => {
+      window.removeEventListener('beforeunload', handler);
+      window.removeEventListener('pagehide', handler);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const deleteSimulation = (id) => {
     const target = simulations.find(s => s.id === id);
     if (!target) return;
-    // Optimistic remove from list
+    // Optimistic remove from the list.
     setSimulations(prev => prev.filter(s => s.id !== id));
-    let undone = false;
+
+    // Schedule the actual DELETE on its OWN timer (decoupled from the toast timer
+    // so that a subsequent toast within the 5 s window can't cancel the deletion).
+    const timer = setTimeout(async () => {
+      pendingDeletesRef.current.delete(id);
+      try {
+        const res = await apiCall(`/rest/v1/solar_simulations?id=eq.${id}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error(await res.text());
+      } catch (e) {
+        console.error('Delete failed:', e);
+        // Restore on failure
+        setSimulations(prev => prev.find(s => s.id === id) ? prev : [target, ...prev]);
+        showToast('Erreur de suppression — étude restaurée', 'error');
+      }
+    }, 5000);
+    pendingDeletesRef.current.set(id, { timer, target });
+
+    // Show the undo toast — purely UI, decoupled from the DELETE timer above.
     showToast(`"${target.client_name || 'Étude'}" supprimée`, 'success', {
       duration: 5000,
       action: {
         label: 'Annuler',
         onClick: () => {
-          undone = true;
+          const pending = pendingDeletesRef.current.get(id);
+          if (pending) {
+            clearTimeout(pending.timer);
+            pendingDeletesRef.current.delete(id);
+          }
           setSimulations(prev => {
-            // Re-insert at original position (best-effort: prepend)
             if (prev.find(s => s.id === id)) return prev;
             return [target, ...prev];
           });
           dismissToast();
         },
-      },
-      onTimeout: async () => {
-        if (undone) return;
-        try {
-          const res = await apiCall(`/rest/v1/solar_simulations?id=eq.${id}`, { method: 'DELETE' });
-          if (!res.ok) throw new Error(await res.text());
-        } catch (e) {
-          console.error(e);
-          // Restore on failure
-          setSimulations(prev => prev.find(s => s.id === id) ? prev : [target, ...prev]);
-          showToast('Erreur de suppression — étude restaurée', 'error');
-        }
       },
     });
   };
