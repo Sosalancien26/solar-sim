@@ -369,28 +369,44 @@ function buildStaticMapUrl(sim, opts = {}) {
 function getCalepinageStats(sim, calcs) {
   const rd = sim.roof_data?.solarPotential;
   const sel = Array.isArray(sim.selected_panels) ? sim.selected_panels : null;
-  if (!rd || !sel?.length) {
-    // Fallback to step 5 target
-    const finalKwc = sim.final_kwc ?? calcs.recommendedKwc;
-    const finalPanels = sim.final_panels ?? calcs.recommendedPanels;
+
+  // PRIORITY 1: explicit step-5 manual override always wins. The user typed a number,
+  // they want THAT number. The calepinage at step 6 is a visualization on top of it.
+  const hasManualOverride = sim.final_kwc != null && sim.final_panels != null;
+  if (hasManualOverride) {
     return {
-      hasCalepinage: false,
-      count: finalPanels,
-      kwc: finalKwc,
-      prodKwh: calcs.production,
+      hasCalepinage: !!(rd && sel?.length),
+      count: sim.final_panels,
+      kwc: sim.final_kwc,
+      // Production scales with the manual kWc — re-use the same productionPerKwc
+      // factor that calcs already computed (so region/orientation/inclination are honored).
+      prodKwh: Math.round(sim.final_kwc * (calcs.productionPerKwc || 1100)),
     };
   }
-  const panelW = rd.panelCapacityWatts || 400;
-  let prod = 0;
-  sel.forEach(idx => {
-    const p = rd.solarPanels[idx];
-    if (p) prod += (p.yearlyEnergyDcKwh || 0);
-  });
+
+  // PRIORITY 2: if no manual override but the user went through calepinage,
+  // use the actual selection so production is per-panel-accurate.
+  if (rd && sel?.length) {
+    const panelW = rd.panelCapacityWatts || 400;
+    let prod = 0;
+    sel.forEach(idx => {
+      const p = rd.solarPanels[idx];
+      if (p) prod += (p.yearlyEnergyDcKwh || 0);
+    });
+    return {
+      hasCalepinage: true,
+      count: sel.length,
+      kwc: Math.round(((sel.length * panelW) / 1000) * 100) / 100,
+      prodKwh: Math.round(prod),
+    };
+  }
+
+  // PRIORITY 3: fallback to the auto-recommended values from calcs.
   return {
-    hasCalepinage: true,
-    count: sel.length,
-    kwc: Math.round(((sel.length * panelW) / 1000) * 100) / 100,
-    prodKwh: Math.round(prod),
+    hasCalepinage: false,
+    count: calcs.recommendedPanels,
+    kwc: calcs.recommendedKwc,
+    prodKwh: calcs.production,
   };
 }
 
@@ -2493,7 +2509,7 @@ function RoofPreviewMap({ sim, height = 360 }) {
         if (cancelled || !mapDivRef.current) return;
         const map = new google.maps.Map(mapDivRef.current, {
           center: { lat: sim.lat, lng: sim.lon },
-          zoom: 21,
+          zoom: 20, // 20 has guaranteed imagery worldwide; fitBounds() below auto-zooms to fit panels
           mapTypeId: google.maps.MapTypeId.SATELLITE,
           tilt: 0,
           rotateControl: false,
@@ -3845,7 +3861,7 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
         const center = { lat: sim.lat, lng: sim.lon };
         const map = new google.maps.Map(mapDivRef.current, {
           center,
-          zoom: 21,
+          zoom: 20, // 20 has guaranteed imagery worldwide; fitBounds() below auto-zooms to fit panels
           mapTypeId: google.maps.MapTypeId.SATELLITE,
           tilt: 0,
           rotateControl: false,
