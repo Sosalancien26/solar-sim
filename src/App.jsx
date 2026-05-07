@@ -2273,10 +2273,6 @@ async function generatePDF(sim, calcs, profile, opts = {}) {
         <div class="lbl">Panneaux</div>
         <div class="val">${finalPanels}<span class="unit">×${sim.panel_power_w}W</span></div>
       </div>
-      <div class="pdf-hero-stat">
-        <div class="lbl">Production / an</div>
-        <div class="val">${finalProd.toLocaleString('fr-FR')}<span class="unit">kWh</span></div>
-      </div>
     </div>
     <div class="pdf-hero-foot">
       <div>
@@ -2328,7 +2324,6 @@ async function generatePDF(sim, calcs, profile, opts = {}) {
         <div class="pdf-row"><span class="lbl">Puissance</span><span class="val">${finalKwc} kWc</span></div>
         <div class="pdf-row"><span class="lbl">Panneaux</span><span class="val">${finalPanels} × ${sim.panel_power_w}W</span></div>
         <div class="pdf-row"><span class="lbl">Surface au sol</span><span class="val">~${surface} m²</span></div>
-        <div class="pdf-row"><span class="lbl">Production / an</span><span class="val">${finalProd.toLocaleString('fr-FR')} kWh</span></div>
         <div class="pdf-row"><span class="lbl">Autoconsommation</span><span class="val">${calcs.selfConsumptionRate}%</span></div>
       </div>
     </div>
@@ -4056,7 +4051,7 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
         </div>
 
         {/* Live stats */}
-        <div className="bg-slate-900 rounded-md p-4 text-white mb-4 grid grid-cols-3 gap-4">
+        <div className="bg-slate-900 rounded-md p-4 text-white mb-4 grid grid-cols-2 gap-4">
           <div>
             <div className="text-[10px] font-bold opacity-70 uppercase tracking-widest">Panneaux</div>
             <div className="text-2xl font-bold mt-0.5">{stats.count}<span className="text-sm font-medium opacity-70 ml-1">/ {rd.solarPanels.length}</span></div>
@@ -4064,10 +4059,6 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
           <div>
             <div className="text-[10px] font-bold opacity-70 uppercase tracking-widest">Puissance</div>
             <div className="text-2xl font-bold text-amber-400 mt-0.5">{stats.kwc.toFixed(1)}<span className="text-sm font-medium opacity-70 ml-1">kWc</span></div>
-          </div>
-          <div>
-            <div className="text-[10px] font-bold opacity-70 uppercase tracking-widest">Production estimée</div>
-            <div className="text-2xl font-bold text-amber-400 mt-0.5">{stats.prodKwh.toLocaleString('fr-FR')}<span className="text-sm font-medium opacity-70 ml-1">kWh/an</span></div>
           </div>
         </div>
 
@@ -4226,18 +4217,14 @@ function StepRecap({ sim, calcs, profile, onBackToList, onNewStudy }) {
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-2 sm:gap-3">
+          <div className="grid grid-cols-2 gap-2 sm:gap-3">
             <div className="bg-white/5 rounded-lg p-3 sm:p-4 border border-white/10">
               <div className="text-[9px] sm:text-[10px] opacity-60 font-bold uppercase tracking-widest mb-1">Puissance</div>
-              <div className="text-2xl sm:text-4xl font-extrabold text-amber-400 leading-none">{finalKwc}<span className="text-sm sm:text-base ml-1 text-white/60 font-medium">kWc</span></div>
+              <div className="text-3xl sm:text-5xl font-extrabold text-amber-400 leading-none">{finalKwc}<span className="text-sm sm:text-base ml-1 text-white/60 font-medium">kWc</span></div>
             </div>
             <div className="bg-white/5 rounded-lg p-3 sm:p-4 border border-white/10">
               <div className="text-[9px] sm:text-[10px] opacity-60 font-bold uppercase tracking-widest mb-1">Panneaux</div>
-              <div className="text-2xl sm:text-4xl font-extrabold text-amber-400 leading-none">{finalPanels}<span className="text-sm sm:text-base ml-1 text-white/60 font-medium">×{sim.panel_power_w}W</span></div>
-            </div>
-            <div className="bg-white/5 rounded-lg p-3 sm:p-4 border border-white/10">
-              <div className="text-[9px] sm:text-[10px] opacity-60 font-bold uppercase tracking-widest mb-1">Production / an</div>
-              <div className="text-2xl sm:text-4xl font-extrabold text-amber-400 leading-none">{finalProd.toLocaleString('fr-FR')}<span className="text-sm sm:text-base ml-1 text-white/60 font-medium">kWh</span></div>
+              <div className="text-3xl sm:text-5xl font-extrabold text-amber-400 leading-none">{finalPanels}<span className="text-sm sm:text-base ml-1 text-white/60 font-medium">×{sim.panel_power_w}W</span></div>
             </div>
           </div>
 
@@ -4257,7 +4244,7 @@ function StepRecap({ sim, calcs, profile, onBackToList, onNewStudy }) {
           (Static Maps shows them twisted because of imagery oblique angle). */}
       {sim.lat && sim.lon && sim.roof_data && (
         <Card>
-          <CardHeader icon={MapPin} title="Calepinage" subtitle={`${finalPanels} panneaux placés sur le toit · production estimée ${finalProd.toLocaleString('fr-FR')} kWh/an`} />
+          <CardHeader icon={MapPin} title="Calepinage" subtitle={`${finalPanels} panneaux placés sur le toit`} />
           <RoofPreviewMap sim={sim} height={380} />
           <div className="text-[10px] text-slate-400 mt-2">
             Imagerie satellite Google · Analyse Google Solar API
@@ -4301,7 +4288,6 @@ function StepRecap({ sim, calcs, profile, onBackToList, onNewStudy }) {
             <Row label="Puissance" value={`${finalKwc} kWc`} />
             <Row label="Nb panneaux" value={`${finalPanels} × ${sim.panel_power_w}W`} />
             <Row label="Surface" value={`~${surface} m²`} />
-            <Row label="Production annuelle" value={`${finalProd.toLocaleString('fr-FR')} kWh`} />
             <Row label="Conso annuelle" value={`${refConso.toLocaleString('fr-FR')} kWh`} />
             <Row label="Autoconsommation" value={`${calcs.selfConsumptionRate}%`} />
             <Row label="Équipements" value={`${(sim.appliances || []).length} équipements identifiés`} />
