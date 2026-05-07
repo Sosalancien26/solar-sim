@@ -1231,6 +1231,23 @@ function MainApp({ session, profile, onLogout }) {
       </header>
 
       <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+        {/* Skip-ahead banner — appears on steps 1-5 once Solar API has finished
+            so the commercial can jump straight to the calepinage if they want. */}
+        {step < 6 && roofFetchStatus === 'ready' && (
+          <button
+            onClick={() => tryGoToStep(6)}
+            className="w-full mb-4 bg-gradient-to-r from-emerald-50 to-emerald-100/70 border border-emerald-300 rounded-lg px-3 py-2.5 sm:px-4 sm:py-3 flex items-center gap-3 hover:from-emerald-100 hover:to-emerald-200/70 transition-all group shadow-sm"
+          >
+            <div className="w-9 h-9 rounded-full bg-emerald-500 flex items-center justify-center flex-shrink-0">
+              <MapPin className="w-5 h-5 text-white" />
+            </div>
+            <div className="flex-1 text-left min-w-0">
+              <div className="text-[10px] font-extrabold uppercase tracking-widest text-emerald-700">Analyse satellite terminée</div>
+              <div className="text-sm font-bold text-emerald-900 truncate">Calepinage disponible · sauter à l'étape 6</div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-emerald-700 group-hover:translate-x-1 transition-transform flex-shrink-0" />
+          </button>
+        )}
         {step === 1 && <StepClient sim={currentSim} update={updateSim} showToast={showToast} errors={visibleErrors} roofFetchStatus={roofFetchStatus} />}
         {step === 2 && <StepHousing sim={currentSim} update={updateSim} errors={visibleErrors} />}
         {step === 3 && <StepAppliances sim={currentSim} update={updateSim} />}
@@ -3324,8 +3341,23 @@ function ConsoBar({ label, value, max, dark }) {
 }
 
 function StepSizing({ sim, update, calcs, overrideMode, setOverrideMode }) {
+  // If user already went through calepinage, surface a hint comparing the chosen
+  // selection vs the current sizing target so they can keep both in sync.
+  const calStats = getCalepinageStats(sim, calcs);
+  const targetPanels = sim.final_panels ?? calcs.recommendedPanels;
+  const calepinageMismatch = calStats.hasCalepinage && targetPanels && calStats.count !== targetPanels;
+
   return (
     <div className="space-y-4">
+      {calepinageMismatch && (
+        <div className="bg-amber-50 border border-amber-300 rounded-lg p-3.5 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+          <div className="flex-1 text-sm text-amber-900">
+            <span className="font-bold">Calepinage déjà réalisé · </span>
+            Tu as retenu <strong>{calStats.count} panneaux ({calStats.kwc} kWc)</strong> à l'étape 6 mais ta cible ici est <strong>{targetPanels} panneaux ({sim.final_kwc ?? calcs.recommendedKwc} kWc)</strong>. Si tu changes la cible, refais un tour à l'étape 6 pour resynchroniser.
+          </div>
+        </div>
+      )}
       <div className="bg-slate-900 rounded-lg p-5 sm:p-6 text-white border border-slate-800">
         <div className="flex items-center gap-2 mb-4 pb-4 border-b border-white/10">
           <div className="w-8 h-8 rounded-md bg-white/10 flex items-center justify-center"><Sparkles className="w-4 h-4 text-amber-400" /></div>
@@ -3446,6 +3478,7 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
   const mapRef = useRef(null);
   const polygonsRef = useRef([]);
   const [mapReady, setMapReady] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [mapError, setMapError] = useState(null);
   const [activePreset, setActivePreset] = useState('optimal'); // optimal | maximum | esthetique
   const [isCustomSelection, setIsCustomSelection] = useState(false); // true once user has clicked individual panels
@@ -3754,8 +3787,14 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
           )}
         </div>
 
-        {/* Map */}
-        <div className="relative rounded-md overflow-hidden border border-slate-200" style={{ height: '480px' }}>
+        {/* Map — bigger on desktop, near-fullscreen on mobile, with custom fullscreen toggle */}
+        <div
+          className={`relative rounded-md overflow-hidden border border-slate-200 transition-all ${
+            isFullscreen
+              ? 'fixed inset-0 z-50 rounded-none border-0'
+              : 'h-[70vh] sm:h-[600px]'
+          }`}
+        >
           <div ref={mapDivRef} className="w-full h-full" />
           {!mapReady && !mapError && (
             <div className="absolute inset-0 bg-slate-100 flex items-center justify-center">
@@ -3770,6 +3809,20 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
                 <p className="text-xs text-slate-500 mt-1">Vérifiez les restrictions de la clé Google Maps.</p>
               </div>
             </div>
+          )}
+          {/* Custom fullscreen toggle (top-left corner so it doesn't conflict with Google's controls) */}
+          {mapReady && !mapError && (
+            <button
+              onClick={() => setIsFullscreen(v => !v)}
+              className="absolute top-3 left-3 z-10 bg-white/95 hover:bg-white text-slate-900 rounded-md shadow-md px-3 py-2 flex items-center gap-2 text-xs font-bold transition-all"
+              title={isFullscreen ? 'Quitter le plein écran' : 'Plein écran'}
+            >
+              {isFullscreen ? (
+                <><X className="w-4 h-4" /> Quitter</>
+              ) : (
+                <><Sparkles className="w-4 h-4" /> Plein écran</>
+              )}
+            </button>
           )}
         </div>
 
