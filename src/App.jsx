@@ -3545,6 +3545,106 @@ function StepSizing({ sim, update, calcs, overrideMode, setOverrideMode }) {
   );
 }
 
+// Compact, reusable address autocomplete (uses BAN — same source as step 1).
+// Calls onSelect({ address, postalCode, city, lat, lon, region }) when a suggestion is picked.
+function InlineAddressSearch({ initialValue = '', onSelect, onCancel, autoFocus = true }) {
+  const [query, setQuery] = useState(initialValue);
+  const [suggestions, setSuggestions] = useState([]);
+  const [showSuggest, setShowSuggest] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const debounceRef = useRef(null);
+  const inputRef = useRef(null);
+
+  useEffect(() => { if (autoFocus && inputRef.current) inputRef.current.focus(); }, [autoFocus]);
+
+  const search = (q) => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!q || q.length < 3) { setSuggestions([]); setShowSuggest(false); return; }
+    const key = q.trim().toLowerCase();
+    if (ADDRESS_CACHE.has(key)) {
+      setSuggestions(ADDRESS_CACHE.get(key));
+      setShowSuggest(true);
+      return;
+    }
+    debounceRef.current = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const res = await fetch(`https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(q)}&limit=5`);
+        const data = await res.json();
+        const features = data.features || [];
+        if (ADDRESS_CACHE.size >= ADDRESS_CACHE_MAX) {
+          ADDRESS_CACHE.delete(ADDRESS_CACHE.keys().next().value);
+        }
+        ADDRESS_CACHE.set(key, features);
+        setSuggestions(features);
+        setShowSuggest(true);
+      } catch { setSuggestions([]); }
+      setSearching(false);
+    }, 500);
+  };
+
+  const pick = (feature) => {
+    const p = feature.properties;
+    const postal = p.postcode || '';
+    let dept = postal.substring(0, 2);
+    if (postal.startsWith('20') && postal.length >= 5) {
+      const num = parseInt(postal, 10);
+      dept = num >= 20200 ? '2B' : '2A';
+    }
+    const region = DEPT_TO_REGION[dept] || null;
+    const coords = feature.geometry?.coordinates;
+    onSelect({
+      address: p.name || '',
+      postalCode: postal,
+      city: p.city || '',
+      lat: Array.isArray(coords) ? Number(coords[1]) : null,
+      lon: Array.isArray(coords) ? Number(coords[0]) : null,
+      region,
+    });
+    setShowSuggest(false);
+    setSuggestions([]);
+  };
+
+  return (
+    <div className="relative">
+      <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 z-10" />
+      <input
+        ref={inputRef}
+        type="text"
+        value={query}
+        onChange={e => { setQuery(e.target.value); search(e.target.value); }}
+        onFocus={() => query && search(query)}
+        onBlur={() => setTimeout(() => setShowSuggest(false), 200)}
+        placeholder="Saisissez l'adresse complète…"
+        className="w-full pl-9 pr-9 py-2.5 bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all text-sm"
+      />
+      {searching && <Loader2 className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-slate-500" />}
+      {!searching && onCancel && (
+        <button onClick={onCancel} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700">
+          <X className="w-4 h-4" />
+        </button>
+      )}
+      {showSuggest && suggestions.length > 0 && (
+        <div className="absolute z-30 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-xl overflow-hidden max-h-72 overflow-y-auto">
+          {suggestions.map((s, i) => (
+            <button key={i} onMouseDown={e => { e.preventDefault(); pick(s); }}
+              className="w-full text-left px-4 py-3 hover:bg-slate-50 border-b border-slate-100 last:border-0 transition-colors flex items-start gap-2.5">
+              <MapPin className="w-4 h-4 text-slate-400 mt-0.5 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-sm text-slate-900 truncate">{s.properties.name}</div>
+                <div className="text-xs text-slate-500 truncate">
+                  {s.properties.postcode} {s.properties.city}
+                  {s.properties.context && <span className="text-slate-400"> · {s.properties.context}</span>}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ============ STEP 6 — CALEPINAGE ============
 
 function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
@@ -3553,6 +3653,25 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
   const polygonsRef = useRef([]);
   const [mapReady, setMapReady] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [editingAddress, setEditingAddress] = useState(false);
+
+  // When the user picks a new address from the inline search, we wipe the previous
+  // roof_data + selection so the prefetch effect in MainApp re-runs against the
+  // fresh lat/lon and Solar API gives us the new building's panels.
+  const onAddressPicked = (a) => {
+    update({
+      client_address: a.address,
+      client_postal_code: a.postalCode,
+      client_city: a.city,
+      lat: Number.isFinite(a.lat) ? a.lat : null,
+      lon: Number.isFinite(a.lon) ? a.lon : null,
+      region: a.region || sim.region,
+      roof_data: null,
+      selected_panels: null,
+    });
+    setEditingAddress(false);
+    if (showToast) showToast(`Adresse mise à jour · nouvelle analyse satellite en cours`);
+  };
 
   // Lock the body scroll when the map goes fullscreen so iOS Safari doesn't
   // bleed the wizard underneath into the visible area.
@@ -3841,6 +3960,40 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
     <div className="space-y-4">
       <Card>
         <CardHeader icon={MapPin} title="Calepinage du toit" subtitle="Visualisation des panneaux sur l'imagerie satellite" num="06" />
+
+        {/* Address bar — view current address and re-search if needed */}
+        <div className="mb-4">
+          {!editingAddress ? (
+            <div className="flex items-center gap-3 px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-md">
+              <MapPin className="w-4 h-4 text-slate-500 flex-shrink-0" />
+              <div className="flex-1 min-w-0 text-sm">
+                <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Adresse analysée</div>
+                <div className="font-semibold text-slate-900 truncate">
+                  {[sim.client_address, sim.client_postal_code, sim.client_city].filter(Boolean).join(', ') || 'Non renseignée'}
+                </div>
+              </div>
+              <button
+                onClick={() => setEditingAddress(true)}
+                className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 rounded-md text-xs font-bold text-slate-700 transition-colors"
+              >
+                <Edit className="w-3.5 h-3.5" />
+                Modifier
+              </button>
+            </div>
+          ) : (
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1.5">Nouvelle adresse</div>
+              <InlineAddressSearch
+                initialValue={sim.client_address || ''}
+                onSelect={onAddressPicked}
+                onCancel={() => setEditingAddress(false)}
+              />
+              <div className="text-[10px] text-slate-400 mt-1.5">
+                ⚠️ Changer l'adresse va relancer l'analyse satellite et effacer la sélection actuelle de panneaux.
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* Live stats */}
         <div className="bg-slate-900 rounded-md p-4 text-white mb-4 grid grid-cols-3 gap-4">
