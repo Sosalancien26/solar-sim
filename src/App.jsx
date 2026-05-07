@@ -3750,31 +3750,28 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
     };
   }, [isFullscreen]);
   const [mapError, setMapError] = useState(null);
-  const [activePreset, setActivePreset] = useState('optimal'); // optimal | maximum | esthetique
+  const [activePreset, setActivePreset] = useState('mixte'); // vertical | horizontal | mixte
   const [isCustomSelection, setIsCustomSelection] = useState(false); // true once user has clicked individual panels
 
   const rd = sim.roof_data?.solarPotential;
   const targetPanels = sim.final_panels ?? calcs.recommendedPanels ?? 0;
 
-  // Pre-computed indices for each preset (deterministic, recomputed when roof_data or target changes)
+  // Pre-computed indices for each preset, by panel ORIENTATION which is what installers
+  // actually care about. Each preset takes the top N most efficient panels matching the
+  // orientation filter, where N is the user's commercial target (or all if no target).
   const presets = useMemo(() => {
-    if (!rd?.solarPanels?.length) return { optimal: [], maximum: [], esthetique: [] };
+    if (!rd?.solarPanels?.length) return { vertical: [], horizontal: [], mixte: [] };
     const total = rd.solarPanels.length;
     const target = Math.max(1, Math.min(targetPanels || total, total));
-    // Optimal: top N most efficient (solarPanels is sorted by yearlyEnergyDcKwh DESC)
-    const optimal = Array.from({ length: target }, (_, i) => i);
-    // Maximum: every panel that fits on the roof
-    const maximum = Array.from({ length: total }, (_, i) => i);
-    // Esthétique: best panels grouped on the largest roof segment (avoids isolated panels on small faces)
-    const segs = (rd.roofSegmentStats || []).map((s, i) => ({ i, area: s.stats?.areaMeters2 || 0 }));
-    segs.sort((a, b) => b.area - a.area);
-    const bestSegmentIdx = segs[0]?.i ?? 0;
-    const esthetique = rd.solarPanels
-      .map((p, idx) => ({ idx, segmentIndex: p.segmentIndex }))
-      .filter(({ segmentIndex }) => segmentIndex === bestSegmentIdx)
-      .slice(0, target)
-      .map(({ idx }) => idx);
-    return { optimal, maximum, esthetique };
+    // solarPanels is already sorted by yearlyEnergyDcKwh DESC by Solar API, so .filter
+    // preserves that order — first N matches = best N panels of that orientation.
+    const portraitIdx = rd.solarPanels.map((p, i) => ({ p, i })).filter(({ p }) => p.orientation === 'PORTRAIT').map(({ i }) => i);
+    const landscapeIdx = rd.solarPanels.map((p, i) => ({ p, i })).filter(({ p }) => p.orientation === 'LANDSCAPE').map(({ i }) => i);
+    return {
+      vertical: portraitIdx.slice(0, target),
+      horizontal: landscapeIdx.slice(0, target),
+      mixte: Array.from({ length: target }, (_, i) => i), // top N regardless of orientation
+    };
   }, [rd, targetPanels]);
 
   // The currently selected panels: either the user's saved choice OR the active preset
@@ -3789,7 +3786,8 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
     setActivePreset(key);
     setIsCustomSelection(false);
     update({ selected_panels: presets[key] });
-    showToast(`Preset « ${key === 'optimal' ? 'Optimal' : key === 'maximum' ? 'Maximum' : 'Esthétique'} » appliqué`);
+    const labels = { vertical: 'Vertical', horizontal: 'Horizontal', mixte: 'Mixte' };
+    showToast(`Disposition « ${labels[key] || key} » appliquée`);
   };
 
   // Toggle a single panel in/out of the selection. Once called, the selection becomes
@@ -3805,20 +3803,20 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
   };
 
   // When roof_data lands, sync activePreset / isCustomSelection with the saved selection.
-  // - No saved selection -> apply the Optimal preset.
+  // - No saved selection -> apply the Mixte preset (best mix regardless of orientation).
   // - Saved selection matches a preset -> highlight that preset.
   // - Saved selection matches no preset -> flag as custom (Reset button shown).
   useEffect(() => {
     if (!rd) return;
     if (!sim.selected_panels?.length) {
-      update({ selected_panels: presets.optimal });
-      setActivePreset('optimal');
+      update({ selected_panels: presets.mixte });
+      setActivePreset('mixte');
       setIsCustomSelection(false);
       return;
     }
     const sel = [...sim.selected_panels].sort((a, b) => a - b);
     const eq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
-    const matchKey = ['optimal', 'esthetique', 'maximum'].find(k =>
+    const matchKey = ['vertical', 'horizontal', 'mixte'].find(k =>
       eq(sel, [...presets[k]].sort((a, b) => a - b))
     );
     if (matchKey) {
@@ -4064,9 +4062,9 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
 
         {/* Preset buttons */}
         <div className="flex flex-col sm:flex-row gap-2 mb-3">
-          {presetButton('optimal', 'Optimal', <Target className="w-4 h-4" />, `Top ${presets.optimal.length} panneaux les plus rentables`)}
-          {presetButton('esthetique', 'Esthétique', <Sparkles className="w-4 h-4" />, `${presets.esthetique.length} panneaux groupés (versant principal)`)}
-          {presetButton('maximum', 'Maximum', <Flame className="w-4 h-4" />, `${presets.maximum.length} panneaux possibles sur le toit`)}
+          {presetButton('vertical', 'Vertical', <ChevronRight className="w-4 h-4 rotate-[-90deg]" />, `${presets.vertical.length} panneau${presets.vertical.length > 1 ? 'x' : ''} en portrait`)}
+          {presetButton('horizontal', 'Horizontal', <ChevronRight className="w-4 h-4" />, `${presets.horizontal.length} panneau${presets.horizontal.length > 1 ? 'x' : ''} en paysage`)}
+          {presetButton('mixte', 'Mixte', <Sparkles className="w-4 h-4" />, `${presets.mixte.length} meilleur${presets.mixte.length > 1 ? 's' : ''} panneau${presets.mixte.length > 1 ? 'x' : ''} toutes orientations`)}
         </div>
 
         {/* Edit hint + custom-selection badge */}
@@ -4079,7 +4077,7 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
             <button
               onClick={() => applyPreset(activePreset)}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 border border-amber-200 text-amber-800 font-bold hover:bg-amber-100 transition-colors"
-              title={`Restaurer le preset ${activePreset === 'optimal' ? 'Optimal' : activePreset === 'maximum' ? 'Maximum' : 'Esthétique'}`}
+              title={`Restaurer la disposition ${activePreset === 'vertical' ? 'Vertical' : activePreset === 'horizontal' ? 'Horizontal' : 'Mixte'}`}
             >
               <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
               Sélection personnalisée — Réinitialiser
