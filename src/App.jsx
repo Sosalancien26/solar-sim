@@ -385,9 +385,12 @@ function getCalepinageStats(sim, calcs) {
   }
 
   // PRIORITY 2: if no manual override but the user went through calepinage,
-  // use the actual selection so production is per-panel-accurate.
+  // use the actual selection so production is per-panel-accurate. We use the user's
+  // chosen panel_power_w (typically 400-500W) rather than the Solar API's reference
+  // panelCapacityWatts (250-400W) so the displayed kWc matches the actual hardware
+  // chosen at step 5.
   if (rd && sel?.length) {
-    const panelW = rd.panelCapacityWatts || 400;
+    const panelW = sim.panel_power_w || rd.panelCapacityWatts || 425;
     let prod = 0;
     sel.forEach(idx => {
       const p = rd.solarPanels[idx];
@@ -3487,19 +3490,23 @@ function StepSizing({ sim, update, calcs, overrideMode, setOverrideMode }) {
           </div>
         </div>
       )}
+      {/* Hero — shows the EFFECTIVE kWc/panels (manual override if set, otherwise auto-recommended) */}
       <div className="bg-slate-900 rounded-lg p-5 sm:p-6 text-white border border-slate-800">
         <div className="flex items-center gap-2 mb-4 pb-4 border-b border-white/10">
           <div className="w-8 h-8 rounded-md bg-white/10 flex items-center justify-center"><Sparkles className="w-4 h-4 text-amber-400" /></div>
-          <h3 className="font-bold text-sm uppercase tracking-widest">Préconisation technique</h3>
+          <h3 className="font-bold text-sm uppercase tracking-widest">{overrideMode ? 'Configuration commerciale' : 'Préconisation technique'}</h3>
+          {overrideMode && (
+            <span className="ml-auto text-[10px] font-extrabold uppercase tracking-widest text-amber-400 bg-amber-400/10 border border-amber-400/30 px-2 py-1 rounded">Manuel</span>
+          )}
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
             <div className="text-[10px] opacity-60 font-bold uppercase tracking-widest mb-1">Puissance</div>
-            <div className="text-4xl font-bold text-amber-400">{calcs.recommendedKwc}<span className="text-base ml-1 text-white/60 font-medium">kWc</span></div>
+            <div className="text-4xl font-bold text-amber-400">{sim.final_kwc ?? calcs.recommendedKwc}<span className="text-base ml-1 text-white/60 font-medium">kWc</span></div>
           </div>
           <div>
             <div className="text-[10px] opacity-60 font-bold uppercase tracking-widest mb-1">Panneaux</div>
-            <div className="text-4xl font-bold text-amber-400">{calcs.recommendedPanels}<span className="text-base ml-1 text-white/60 font-medium">u.</span></div>
+            <div className="text-4xl font-bold text-amber-400">{sim.final_panels ?? calcs.recommendedPanels}<span className="text-base ml-1 text-white/60 font-medium">u.</span></div>
           </div>
         </div>
         <div className="mt-4 pt-4 border-t border-white/10">
@@ -3827,10 +3834,12 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
     }
   }, [rd]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Live stats for the currently displayed panels
+  // Live stats for the currently displayed panels.
+  // Uses sim.panel_power_w (the panel model selected at step 5) so the kWc shown here
+  // matches the actual hardware. Falls back to Solar API's reference value otherwise.
   const stats = useMemo(() => {
     if (!rd) return { count: 0, kwc: 0, prodKwh: 0 };
-    const panelW = rd.panelCapacityWatts || 400;
+    const panelW = sim.panel_power_w || rd.panelCapacityWatts || 425;
     let prod = 0;
     selectedSet.forEach(idx => {
       const p = rd.solarPanels[idx];
