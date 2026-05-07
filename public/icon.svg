@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#fbbf24" stop-opacity="0.55"/>
+      <stop offset="60%" stop-color="#fbbf24" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#fbbf24" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="sun" cx="40%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#fde68a"/>
+      <stop offset="60%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </radialGradient>
+  </defs>
+  <!-- Rounded square background -->
+  <rect width="512" height="512" rx="112" ry="112" fill="url(#bg)"/>
+  <!-- Glow halo -->
+  <circle cx="256" cy="256" r="220" fill="url(#glow)"/>
+  <!-- Sun rays -->
+  <g stroke="#fbbf24" stroke-width="26" stroke-linecap="round" fill="none">
+    <line x1="256" y1="86"  x2="256" y2="138"/>
+    <line x1="256" y1="374" x2="256" y2="426"/>
+    <line x1="86"  y1="256" x2="138" y2="256"/>
+    <line x1="374" y1="256" x2="426" y2="256"/>
+    <line x1="135" y1="135" x2="172" y2="172"/>
+    <line x1="340" y1="340" x2="377" y2="377"/>
+    <line x1="135" y1="377" x2="172" y2="340"/>
+    <line x1="340" y1="172" x2="377" y2="135"/>
+  </g>
+  <!-- Sun core -->
+  <circle cx="256" cy="256" r="92" fill="url(#sun)"/>
+  <!-- Subtle highlight on sun -->
+  <ellipse cx="232" cy="228" rx="36" ry="22" fill="#fef3c7" opacity="0.55"/>
+</svg>
