@@ -2024,6 +2024,24 @@ async function generatePDF(sim, calcs, profile, opts = {}) {
   const safeName = (sim.client_name || 'client').replace(/[^a-z0-9_-]/gi, '_').slice(0, 40);
   const filename = `Etude_PV_${safeName}_${ref}.pdf`;
 
+  // CRITICAL: open the new window IMMEDIATELY, while we're still inside the user-gesture
+  // event handler. Safari iOS (and other mobile browsers) treat window.open() called after
+  // an `await` as a programmatic popup and BLOCK it. Doing it first preserves the gesture.
+  const win = window.open('', '_blank');
+  if (!win) {
+    alert("Le navigateur a bloqué la fenêtre. Autorisez les popups pour cette page (réglages Safari → Bloquer les pop-ups → désactivé pour ce site).");
+    return;
+  }
+  // Show a temporary loading screen so the user knows something is happening.
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Préparation du PDF…</title>
+    <style>html,body{margin:0;height:100%;background:#0f172a;color:#fff;font-family:-apple-system,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px}
+    .spin{width:48px;height:48px;border:3px solid rgba(255,255,255,.15);border-top-color:#fbbf24;border-radius:50%;animation:s 1s linear infinite;margin-bottom:18px}
+    @keyframes s{to{transform:rotate(360deg)}}
+    h1{font-size:18pt;margin-bottom:6px;font-weight:700}
+    p{opacity:.6;font-size:11pt;max-width:280px;line-height:1.4}</style>
+    </head><body><div class="spin"></div><h1>Préparation du PDF…</h1><p>Chargement de la carte satellite</p></body></html>`);
+  win.document.close();
+
   // The Récap step renders a live interactive Google Map (RoofPreviewMap) where
   // panels are properly placed on the rooftop because the JS API compensates for
   // satellite imagery angle. We capture that DOM element first — if successful, we
@@ -2316,15 +2334,9 @@ async function generatePDF(sim, calcs, profile, opts = {}) {
   `;
 
   // === RENDER & PRINT ===
-  // Open a fresh window with the report and trigger the browser's print dialog.
-  // Modern browsers offer "Save as PDF" in the dialog — one click and you get a real,
-  // pixel-perfect PDF. We tried html2pdf first but its off-screen capture is unreliable
-  // (left-clipped content, blank pages between content pages).
-  const win = window.open('', '_blank');
-  if (!win) {
-    alert('Le navigateur a bloqué la fenêtre. Autorisez les popups pour cette page.');
-    return;
-  }
+  // The window is already open (we opened it at the very top of this function so the user
+  // gesture wasn't lost on mobile). Now we replace the loading screen with the real report.
+  if (win.closed) return;
   // Sticky toolbar with explicit "Retour" + "Télécharger" buttons so mobile users aren't
   // stuck on the print page. Hidden during the actual print via @media print.
   const toolbar = `
@@ -2339,6 +2351,7 @@ async function generatePDF(sim, calcs, profile, opts = {}) {
   // Detect mobile to skip the auto-print pop (iOS Safari behaves badly with auto-trigger,
   // we'd rather the user tap the explicit button).
   const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  win.document.open();
   win.document.write(`<!doctype html><html lang="fr"><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${filename.replace(/\\.pdf$/, '')}</title>
@@ -3540,6 +3553,28 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
   const polygonsRef = useRef([]);
   const [mapReady, setMapReady] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Lock the body scroll when the map goes fullscreen so iOS Safari doesn't
+  // bleed the wizard underneath into the visible area.
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    // Trigger map resize so Google Maps re-renders tiles to fit the new size.
+    if (mapRef.current && window.google) {
+      setTimeout(() => window.google.maps.event.trigger(mapRef.current, 'resize'), 100);
+    }
+    // Allow ESC to close fullscreen
+    const onKey = (e) => { if (e.key === 'Escape') setIsFullscreen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener('keydown', onKey);
+      if (mapRef.current && window.google) {
+        setTimeout(() => window.google.maps.event.trigger(mapRef.current, 'resize'), 100);
+      }
+    };
+  }, [isFullscreen]);
   const [mapError, setMapError] = useState(null);
   const [activePreset, setActivePreset] = useState('optimal'); // optimal | maximum | esthetique
   const [isCustomSelection, setIsCustomSelection] = useState(false); // true once user has clicked individual panels
@@ -3850,11 +3885,12 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
 
         {/* Map — bigger on desktop, near-fullscreen on mobile, with custom fullscreen toggle */}
         <div
-          className={`relative rounded-md overflow-hidden border border-slate-200 transition-all ${
+          className={`relative rounded-md overflow-hidden border border-slate-200 ${
             isFullscreen
-              ? 'fixed inset-0 z-50 rounded-none border-0'
+              ? 'fixed inset-0 z-[100] rounded-none border-0 bg-slate-900'
               : 'h-[70vh] sm:h-[600px]'
           }`}
+          style={isFullscreen ? { width: '100vw', height: '100dvh' } : undefined}
         >
           <div ref={mapDivRef} className="w-full h-full" />
           {!mapReady && !mapError && (
