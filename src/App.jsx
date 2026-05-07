@@ -1190,31 +1190,41 @@ function MainApp({ session, profile, onLogout }) {
           </div>
 
           <div className="relative pt-2">
-            <div className="absolute top-[18px] left-4 right-4 h-0.5 bg-slate-200">
+            <div className="absolute top-[22px] sm:top-[22px] left-4 right-4 h-0.5 bg-slate-200">
               <div className="h-full bg-gradient-to-r from-slate-900 to-amber-500 transition-all duration-500"
                 style={{ width: `${overallProgress(currentSim)}%` }} />
             </div>
-            <div className="relative flex items-start justify-between">
+            <div className="relative flex items-start justify-between gap-1">
               {STEPS.map((s) => {
                 const Icon = s.icon;
                 const isActive = step === s.id;
                 const isDone = step > s.id;
                 return (
                   <button key={s.id} onClick={() => tryGoToStep(s.id)}
-                    className="flex flex-col items-center gap-1.5 group">
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${
-                      isActive ? 'bg-slate-900 text-amber-400 ring-4 ring-amber-100'
+                    className="flex flex-col items-center gap-1.5 group min-w-0 flex-1 sm:flex-initial">
+                    <div className={`w-10 h-10 sm:w-9 sm:h-9 rounded-full flex items-center justify-center transition-all flex-shrink-0 ${
+                      isActive ? 'bg-slate-900 text-amber-400 ring-4 ring-amber-100 scale-110'
                       : isDone ? 'bg-slate-900 text-white'
                       : 'bg-white border-2 border-slate-200 text-slate-400'
                     }`}>
-                      {isDone ? <CheckCircle className="w-4 h-4" /> : <Icon className="w-3.5 h-3.5" />}
+                      {isDone ? <CheckCircle className="w-4 h-4" /> : <Icon className="w-4 h-4 sm:w-4 sm:h-4" />}
                     </div>
-                    <div className={`text-[10px] sm:text-[11px] font-bold uppercase tracking-wide transition-colors ${
+                    {/* Label: hidden on mobile (only icon), shown from sm+ */}
+                    <div className={`hidden sm:block text-[10px] sm:text-[11px] font-bold uppercase tracking-wide transition-colors ${
                       isActive ? 'text-slate-900' : isDone ? 'text-slate-700' : 'text-slate-400'
                     }`}>{s.label}</div>
                   </button>
                 );
               })}
+            </div>
+            {/* Mobile-only: name of the active step under the pills */}
+            <div className="sm:hidden mt-2 text-center">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                Étape {step}/{STEPS.length}
+              </div>
+              <div className="text-sm font-extrabold text-slate-900 mt-0.5">
+                {STEPS.find(s => s.id === step)?.label || ''}
+              </div>
             </div>
           </div>
         </div>
@@ -1229,44 +1239,49 @@ function MainApp({ session, profile, onLogout }) {
         {step === 6 && <StepCalepinage sim={currentSim} update={updateSim} calcs={calcs} roofFetchStatus={roofFetchStatus} showToast={showToast} />}
         {step === 7 && <StepRecap sim={currentSim} calcs={calcs} profile={profile} />}
 
-        <div className="flex items-center justify-between mt-8 gap-3">
-          <button onClick={() => tryGoToStep(Math.max(1, step - 1))} disabled={step === 1}
-            className="px-4 py-2.5 bg-white border border-slate-200 rounded-md font-semibold text-slate-700 disabled:opacity-40 hover:bg-slate-50 transition-all flex items-center gap-1.5 text-sm">
-            <ChevronLeft className="w-4 h-4" />
-            <span className="hidden sm:inline">Précédent</span>
-          </button>
-          {step < STEPS.length ? (
-            step === 6 ? (
-              <button
-                onClick={() => {
-                  setEligibilityChecking(true);
-                  // Total = sum of per-check durations (~9.1s) + a 700ms hold so the user
-                  // sees the last check turn green before we transition to Récap.
-                  setTimeout(() => {
-                    setEligibilityChecking(false);
-                    setStep(7);
-                  }, 9800);
-                }}
-                className="flex-1 sm:flex-initial px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md font-bold transition-all flex items-center justify-center gap-1.5 text-sm shadow-sm uppercase tracking-wide"
-              >
-                <Sparkles className="w-4 h-4" />
-                Démarrer la vérification
-                <ChevronRight className="w-4 h-4" />
-              </button>
-            ) : (
-              <button onClick={() => tryGoToStep(Math.min(STEPS.length, step + 1))}
-                className="flex-1 sm:flex-initial px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-md font-semibold transition-all flex items-center justify-center gap-1.5 text-sm shadow-sm">
-                Continuer
-                <ChevronRight className="w-4 h-4" />
-              </button>
-            )
-          ) : (
-            <button onClick={saveSimulation} disabled={saving}
-              className="flex-1 sm:flex-initial px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-md font-semibold transition-all flex items-center justify-center gap-1.5 disabled:opacity-60 text-sm shadow-sm">
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
-              Finaliser l'étude
+        {/* Wizard navigation: fixed bottom-bar on mobile, inline on desktop. */}
+        <div className="
+          fixed bottom-0 left-0 right-0 z-30 bg-white border-t border-slate-200 px-3 py-2.5 shadow-[0_-4px_12px_rgba(0,0,0,0.08)]
+          sm:static sm:bg-transparent sm:border-0 sm:shadow-none sm:px-0 sm:py-0 sm:mt-8
+        ">
+          <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
+            <button onClick={() => tryGoToStep(Math.max(1, step - 1))} disabled={step === 1}
+              className="min-h-[44px] px-4 py-2.5 bg-white border border-slate-200 rounded-md font-semibold text-slate-700 disabled:opacity-40 hover:bg-slate-50 transition-all flex items-center gap-1.5 text-sm">
+              <ChevronLeft className="w-4 h-4" />
+              <span className="hidden sm:inline">Précédent</span>
             </button>
-          )}
+            {step < STEPS.length ? (
+              step === 6 ? (
+                <button
+                  onClick={() => {
+                    setEligibilityChecking(true);
+                    setTimeout(() => {
+                      setEligibilityChecking(false);
+                      setStep(7);
+                    }, 9800);
+                  }}
+                  className="min-h-[44px] flex-1 sm:flex-initial px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md font-bold transition-all flex items-center justify-center gap-1.5 text-sm shadow-sm uppercase tracking-wide"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  <span className="hidden xs:inline sm:inline">Démarrer la vérification</span>
+                  <span className="xs:hidden sm:hidden">Démarrer</span>
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              ) : (
+                <button onClick={() => tryGoToStep(Math.min(STEPS.length, step + 1))}
+                  className="min-h-[44px] flex-1 sm:flex-initial px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-md font-semibold transition-all flex items-center justify-center gap-1.5 text-sm shadow-sm">
+                  Continuer
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              )
+            ) : (
+              <button onClick={saveSimulation} disabled={saving}
+                className="min-h-[44px] flex-1 sm:flex-initial px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-md font-semibold transition-all flex items-center justify-center gap-1.5 disabled:opacity-60 text-sm shadow-sm">
+                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                Finaliser l'étude
+              </button>
+            )}
+          </div>
         </div>
       </main>
     </div>
@@ -3811,37 +3826,59 @@ function StepRecap({ sim, calcs, profile }) {
 
   return (
     <div className="space-y-4">
-      <div className="relative bg-slate-900 rounded-lg p-6 text-white overflow-hidden border border-slate-800">
-        <div className="absolute top-0 right-0 w-40 h-40 bg-amber-500/10 rounded-full -mr-20 -mt-20 blur-2xl" />
+      {/* Eligibility badge — moved to TOP for max client reassurance */}
+      <div className="bg-gradient-to-br from-emerald-50 to-emerald-100/60 border-2 border-emerald-500 rounded-xl p-5 sm:p-6 flex items-center gap-4 shadow-md">
+        <div className="w-16 h-16 sm:w-18 sm:h-18 rounded-full bg-emerald-500 flex items-center justify-center flex-shrink-0 shadow-lg">
+          <CheckCircle className="w-9 h-9 sm:w-10 sm:h-10 text-white" strokeWidth={2.5} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[10px] font-extrabold uppercase tracking-[0.2em] text-emerald-700 mb-1">Statut administratif</div>
+          <div className="text-xl sm:text-2xl font-extrabold text-emerald-900 leading-tight">
+            Éligible à la constitution d'un dossier d'études
+          </div>
+          <div className="text-xs sm:text-sm text-emerald-700 mt-1.5">
+            Cette installation répond aux critères techniques pour la constitution d'un dossier d'études complet.
+          </div>
+        </div>
+      </div>
+
+      {/* Hero — 3 big numbers (Puissance / Panneaux / Production) */}
+      <div className="relative bg-gradient-to-br from-slate-900 via-slate-900 to-slate-800 rounded-xl p-5 sm:p-7 text-white overflow-hidden border border-slate-800 shadow-lg">
+        <div className="absolute top-0 right-0 w-56 h-56 bg-amber-500/15 rounded-full -mr-24 -mt-24 blur-3xl" />
+        <div className="absolute bottom-0 left-0 w-40 h-40 bg-amber-500/10 rounded-full -ml-16 -mb-16 blur-2xl" />
         <div className="relative">
           <div className="flex items-start justify-between mb-5">
             <div className="flex items-center gap-3">
-              <div className="w-11 h-11 bg-white/10 rounded-md flex items-center justify-center border border-white/10">
-                <Sun className="w-5 h-5 text-amber-400" />
+              <div className="w-12 h-12 bg-white/10 rounded-lg flex items-center justify-center border border-white/10">
+                <Sun className="w-6 h-6 text-amber-400" />
               </div>
               <div>
                 <div className="text-[10px] opacity-60 font-bold uppercase tracking-widest">Étude photovoltaïque</div>
-                <div className="text-xl sm:text-2xl font-bold leading-tight">{sim.client_name || 'Client'}</div>
+                <div className="text-xl sm:text-2xl font-extrabold leading-tight">{sim.client_name || 'Client'}</div>
               </div>
             </div>
             <div className="text-right">
-              <div className="text-[10px] opacity-60 font-bold uppercase tracking-widest">Date</div>
+              <div className="text-[10px] opacity-60 font-bold uppercase tracking-widest">Édité le</div>
               <div className="text-xs font-semibold mt-0.5">{today}</div>
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className="bg-white/5 rounded-md p-4 border border-white/10">
-              <div className="text-[10px] opacity-60 font-bold uppercase tracking-widest mb-1">Puissance</div>
-              <div className="text-3xl font-bold text-amber-400">{finalKwc}<span className="text-base ml-1 text-white/60 font-medium">kWc</span></div>
+          <div className="grid grid-cols-3 gap-2 sm:gap-3">
+            <div className="bg-white/5 rounded-lg p-3 sm:p-4 border border-white/10">
+              <div className="text-[9px] sm:text-[10px] opacity-60 font-bold uppercase tracking-widest mb-1">Puissance</div>
+              <div className="text-2xl sm:text-4xl font-extrabold text-amber-400 leading-none">{finalKwc}<span className="text-sm sm:text-base ml-1 text-white/60 font-medium">kWc</span></div>
             </div>
-            <div className="bg-white/5 rounded-md p-4 border border-white/10">
-              <div className="text-[10px] opacity-60 font-bold uppercase tracking-widest mb-1">Panneaux</div>
-              <div className="text-3xl font-bold text-amber-400">{finalPanels}<span className="text-base ml-1 text-white/60 font-medium">×{sim.panel_power_w}W</span></div>
+            <div className="bg-white/5 rounded-lg p-3 sm:p-4 border border-white/10">
+              <div className="text-[9px] sm:text-[10px] opacity-60 font-bold uppercase tracking-widest mb-1">Panneaux</div>
+              <div className="text-2xl sm:text-4xl font-extrabold text-amber-400 leading-none">{finalPanels}<span className="text-sm sm:text-base ml-1 text-white/60 font-medium">×{sim.panel_power_w}W</span></div>
+            </div>
+            <div className="bg-white/5 rounded-lg p-3 sm:p-4 border border-white/10">
+              <div className="text-[9px] sm:text-[10px] opacity-60 font-bold uppercase tracking-widest mb-1">Production / an</div>
+              <div className="text-2xl sm:text-4xl font-extrabold text-amber-400 leading-none">{finalProd.toLocaleString('fr-FR')}<span className="text-sm sm:text-base ml-1 text-white/60 font-medium">kWh</span></div>
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 mt-3">
+          <div className="grid grid-cols-2 gap-2 mt-3 sm:mt-4">
             <MiniStat label="Autoconsommation" value={`${calcs.selfConsumptionRate}%`} highlight />
             <MiniStat label="Surface panneaux" value={`${surface}`} unit="m²" />
           </div>
@@ -3850,22 +3887,6 @@ function StepRecap({ sim, calcs, profile }) {
               Cible commerciale (étape 5) : {targetKwc} kWc / {targetPanels} panneaux — ajusté lors du calepinage.
             </div>
           )}
-        </div>
-      </div>
-
-      {/* Eligibility badge — prominent, professional */}
-      <div className="bg-emerald-50 border-2 border-emerald-500 rounded-lg p-5 flex items-center gap-4 shadow-sm">
-        <div className="w-14 h-14 rounded-full bg-emerald-500 flex items-center justify-center flex-shrink-0 shadow-md">
-          <CheckCircle className="w-8 h-8 text-white" strokeWidth={2.5} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-[10px] font-bold uppercase tracking-widest text-emerald-700 mb-0.5">Statut administratif</div>
-          <div className="text-lg sm:text-xl font-extrabold text-emerald-900 leading-tight">
-            Éligible à la constitution d'un dossier d'études
-          </div>
-          <div className="text-xs text-emerald-700 mt-1">
-            Cette installation répond aux critères techniques pour la constitution d'un dossier d'études complet.
-          </div>
         </div>
       </div>
 
