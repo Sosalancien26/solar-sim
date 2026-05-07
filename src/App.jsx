@@ -1072,26 +1072,52 @@ function MainApp({ session, profile, onLogout }) {
               {[...Array(6)].map((_, i) => <SimCardSkeleton key={i} />)}
             </div>
           ) : filteredSims.length === 0 ? (
-            <div className="bg-white rounded-lg p-12 text-center border border-slate-200">
-              <div className="w-14 h-14 mx-auto mb-4 rounded-lg bg-slate-100 flex items-center justify-center">
-                <Sun className="w-7 h-7 text-slate-400" />
+            (searchQuery || filterCommercial || filterStatus) ? (
+              <div className="bg-white rounded-lg p-12 text-center border border-slate-200">
+                <div className="w-14 h-14 mx-auto mb-4 rounded-lg bg-slate-100 flex items-center justify-center">
+                  <Search className="w-7 h-7 text-slate-400" />
+                </div>
+                <h3 className="text-base font-bold text-slate-900 mb-1">Aucun résultat</h3>
+                <p className="text-slate-500 mb-6 text-sm">Essayez d'autres critères</p>
               </div>
-              <h3 className="text-base font-bold text-slate-900 mb-1">
-                {searchQuery || filterCommercial || filterStatus ? 'Aucun résultat' : 'Aucune étude'}
-              </h3>
-              <p className="text-slate-500 mb-6 text-sm">
-                {searchQuery || filterCommercial || filterStatus
-                  ? "Essayez d'autres critères"
-                  : 'Démarrez votre première étude'}
-              </p>
-              {!searchQuery && !filterCommercial && !filterStatus && (
-                <button onClick={newSimulation}
-                  className="bg-slate-900 hover:bg-slate-800 text-white px-5 py-2.5 rounded-md font-semibold inline-flex items-center gap-2 transition-all text-sm shadow-sm">
-                  <Plus className="w-4 h-4" />
-                  Nouvelle étude
-                </button>
-              )}
-            </div>
+            ) : (
+              /* True empty state — first-time user onboarding */
+              <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-slate-800 rounded-2xl p-8 sm:p-12 text-center text-white relative overflow-hidden border border-slate-800 shadow-xl">
+                <div className="absolute top-0 right-0 w-64 h-64 bg-amber-500/15 rounded-full -mr-32 -mt-32 blur-3xl" />
+                <div className="absolute bottom-0 left-0 w-48 h-48 bg-amber-500/10 rounded-full -ml-24 -mb-24 blur-2xl" />
+                <div className="relative">
+                  <div className="w-20 h-20 mx-auto mb-5 rounded-2xl bg-amber-400/15 border border-amber-400/30 flex items-center justify-center">
+                    <Sun className="w-10 h-10 text-amber-400" strokeWidth={2} />
+                  </div>
+                  <h3 className="text-2xl sm:text-3xl font-extrabold mb-2">Bienvenue, {profile.full_name?.split(' ')[0] || 'commercial'}&nbsp;👋</h3>
+                  <p className="text-white/70 text-sm sm:text-base mb-2 max-w-md mx-auto">
+                    Tu es prêt à créer ta toute première étude photovoltaïque.
+                  </p>
+                  <p className="text-white/50 text-xs mb-7 max-w-md mx-auto">
+                    En 7 étapes simples : adresse client, logement, équipements, calepinage avec carte satellite et récap PDF prêt à envoyer.
+                  </p>
+                  <button onClick={newSimulation}
+                    className="bg-amber-400 hover:bg-amber-300 text-slate-900 px-6 py-3 rounded-lg font-extrabold inline-flex items-center gap-2 transition-all text-sm shadow-lg uppercase tracking-wide">
+                    <Plus className="w-4 h-4" strokeWidth={3} />
+                    Démarrer ma première étude
+                  </button>
+                  <div className="mt-6 grid grid-cols-3 gap-3 max-w-sm mx-auto text-left">
+                    <div className="text-[10px] text-white/60">
+                      <div className="font-bold text-amber-400">🛰️</div>
+                      <div className="mt-1">Analyse satellite auto</div>
+                    </div>
+                    <div className="text-[10px] text-white/60">
+                      <div className="font-bold text-amber-400">📐</div>
+                      <div className="mt-1">Calepinage interactif</div>
+                    </div>
+                    <div className="text-[10px] text-white/60">
+                      <div className="font-bold text-amber-400">📄</div>
+                      <div className="mt-1">PDF pro en 1 clic</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )
           ) : (
             <>
               <div className="text-xs text-slate-500 mb-3 font-medium">
@@ -1148,8 +1174,14 @@ function MainApp({ session, profile, onLogout }) {
       <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 py-3">
           <div className="flex items-center justify-between mb-3 gap-2">
-            <button onClick={() => setView('list')}
-              className="flex items-center gap-1.5 text-slate-600 hover:text-slate-900 font-semibold text-sm transition-colors">
+            <button
+              onClick={() => {
+                if (isDirty) {
+                  if (!confirm('Vous avez des modifications non enregistrées.\n\nQuitter quand même ?')) return;
+                }
+                setView('list');
+              }}
+              className="flex items-center gap-1.5 text-slate-600 hover:text-slate-900 font-semibold text-sm transition-colors min-h-[44px] -ml-2 px-2">
               <ChevronLeft className="w-4 h-4" />
               <span className="hidden sm:inline">Retour</span>
             </button>
@@ -1248,13 +1280,16 @@ function MainApp({ session, profile, onLogout }) {
             <ChevronRight className="w-5 h-5 text-emerald-700 group-hover:translate-x-1 transition-transform flex-shrink-0" />
           </button>
         )}
-        {step === 1 && <StepClient sim={currentSim} update={updateSim} showToast={showToast} errors={visibleErrors} roofFetchStatus={roofFetchStatus} />}
-        {step === 2 && <StepHousing sim={currentSim} update={updateSim} errors={visibleErrors} />}
-        {step === 3 && <StepAppliances sim={currentSim} update={updateSim} />}
-        {step === 4 && <StepConsumption sim={currentSim} update={updateSim} calcs={calcs} />}
-        {step === 5 && <StepSizing sim={currentSim} update={updateSim} calcs={calcs} overrideMode={overrideMode} setOverrideMode={setOverrideMode} />}
-        {step === 6 && <StepCalepinage sim={currentSim} update={updateSim} calcs={calcs} roofFetchStatus={roofFetchStatus} showToast={showToast} />}
-        {step === 7 && <StepRecap sim={currentSim} calcs={calcs} profile={profile} />}
+        {/* key={step} forces a remount on step change so the fade-in animation replays */}
+        <div key={step} className="solar-step-fade">
+          {step === 1 && <StepClient sim={currentSim} update={updateSim} showToast={showToast} errors={visibleErrors} roofFetchStatus={roofFetchStatus} />}
+          {step === 2 && <StepHousing sim={currentSim} update={updateSim} errors={visibleErrors} />}
+          {step === 3 && <StepAppliances sim={currentSim} update={updateSim} />}
+          {step === 4 && <StepConsumption sim={currentSim} update={updateSim} calcs={calcs} />}
+          {step === 5 && <StepSizing sim={currentSim} update={updateSim} calcs={calcs} overrideMode={overrideMode} setOverrideMode={setOverrideMode} />}
+          {step === 6 && <StepCalepinage sim={currentSim} update={updateSim} calcs={calcs} roofFetchStatus={roofFetchStatus} showToast={showToast} />}
+          {step === 7 && <StepRecap sim={currentSim} calcs={calcs} profile={profile} onBackToList={() => { if (isDirty && !confirm('Modifications non enregistrées. Quitter ?')) return; setView('list'); }} onNewStudy={newSimulation} />}
+        </div>
 
         {/* Wizard navigation: fixed bottom-bar on mobile, inline on desktop. */}
         <div className="
@@ -2112,7 +2147,19 @@ async function generatePDF(sim, calcs, profile, opts = {}) {
 
   <div class="pdf-header">
     <div class="pdf-logo">
-      <div class="pdf-logo-icon">☀</div>
+      <div class="pdf-logo-icon">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="4" fill="#fbbf24"/>
+          <path d="M12 2v2"/>
+          <path d="M12 20v2"/>
+          <path d="m4.93 4.93 1.41 1.41"/>
+          <path d="m17.66 17.66 1.41 1.41"/>
+          <path d="M2 12h2"/>
+          <path d="M20 12h2"/>
+          <path d="m6.34 17.66-1.41 1.41"/>
+          <path d="m19.07 4.93-1.41 1.41"/>
+        </svg>
+      </div>
       <div class="pdf-logo-text">
         <h1>SOLAR SIM</h1>
         <p>Études photovoltaïques</p>
@@ -2609,8 +2656,10 @@ function SaveBadge({ dirty, status, lastSavedAt }) {
     );
   }
   if (lastSavedAt) {
+    // Pulse on transition from 'saving' → 'saved' (we get a 'saved' status briefly after success).
+    const justSaved = status === 'saved';
     return (
-      <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 px-2">
+      <span className={`hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 px-2 ${justSaved ? 'solar-saved-pulse' : ''}`}>
         <CheckCircle className="w-3 h-3" />
         Enregistré {formatAgo(lastSavedAt)}
       </span>
@@ -2658,9 +2707,21 @@ const SimCard = React.memo(function SimCard({ sim, isManager, onOpen, onDelete, 
     'annulé': { bg: 'bg-red-50', text: 'text-red-700', dot: 'bg-red-500' },
   };
   const cfg = statusConfig[sim.status] || statusConfig.brouillon;
+  // Recent if updated in the last 24h
+  const isRecent = (() => {
+    const t = Date.parse(sim.updated_at || sim.created_at || '');
+    if (!t) return false;
+    return (Date.now() - t) < 24 * 60 * 60 * 1000;
+  })();
 
   return (
-    <div className="bg-white rounded-lg p-5 border border-slate-200 hover:border-slate-400 hover:shadow-md transition-all group">
+    <div className={`relative bg-white rounded-lg p-5 border transition-all group ${isRecent ? 'border-amber-300 hover:border-amber-500 hover:shadow-lg ring-1 ring-amber-100' : 'border-slate-200 hover:border-slate-400 hover:shadow-md'}`}>
+      {isRecent && (
+        <div className="absolute -top-1.5 -right-1.5 flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500 text-white text-[9px] font-extrabold uppercase tracking-widest shadow-sm">
+          <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+          Récent
+        </div>
+      )}
       <div className="flex items-start justify-between mb-3 gap-2">
         <div className="flex-1 min-w-0">
           <h3 className="font-bold text-slate-900 truncate">{sim.client_name || 'Sans nom'}</h3>
@@ -3861,7 +3922,7 @@ function StepCalepinage({ sim, update, calcs, roofFetchStatus, showToast }) {
   );
 }
 
-function StepRecap({ sim, calcs, profile }) {
+function StepRecap({ sim, calcs, profile, onBackToList, onNewStudy }) {
   // Calepinage drives the final numbers when the user has selected panels at step 6,
   // otherwise we fall back to the step-5 commercial target.
   const cal = getCalepinageStats(sim, calcs);
@@ -4054,6 +4115,30 @@ function StepRecap({ sim, calcs, profile }) {
           </div>
         </div>
       </Card>
+
+      {/* Bottom action bar — shortcuts after the user has finished reviewing the study */}
+      {(onBackToList || onNewStudy) && (
+        <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 pt-2">
+          {onBackToList && (
+            <button
+              onClick={onBackToList}
+              className="flex-1 min-h-[48px] bg-white border border-slate-200 hover:bg-slate-50 rounded-lg font-bold text-slate-700 flex items-center justify-center gap-2 px-4 py-3 transition-all shadow-sm"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              Retour à la liste
+            </button>
+          )}
+          {onNewStudy && (
+            <button
+              onClick={onNewStudy}
+              className="flex-1 min-h-[48px] bg-slate-900 hover:bg-slate-800 text-white rounded-lg font-bold flex items-center justify-center gap-2 px-4 py-3 transition-all shadow-sm"
+            >
+              <Plus className="w-4 h-4" />
+              Nouvelle étude
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="text-center pt-2">
         <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-widest">

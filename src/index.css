@@ -7,13 +7,12 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-}@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
 }
+
+/* Wizard step fade-in: triggered by remount via key={step} on the wrapper. */
+@keyframes solar-fade-in {
+  0%   { opacity: 0; transform: translateY(6px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.solar-step-fade {
+  animation: solar-fade-in 0.28
